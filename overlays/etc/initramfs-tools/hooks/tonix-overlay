@@ -1,0 +1,17 @@
+#!/bin/sh
+# Tonix — initramfs hook to include overlayfs support
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# Include overlayfs kernel module
+manual_add_modules overlay
+
+# Include mount utilities
+copy_exec /bin/mount
+copy_exec /bin/umount
+copy_exec /bin/mkdir

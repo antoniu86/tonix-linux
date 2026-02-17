@@ -1,0 +1,60 @@
+#!/bin/bash
+# ============================================================================
+# Tonix WiFi Monitor
+# ============================================================================
+# Runs as a daemon. Periodically checks for unmanaged WiFi interfaces
+# and USB WiFi adapters that might have been missed by udev.
+# Ensures any external WiFi adapter is picked up by NetworkManager.
+
+LOG_TAG="tonix-wifi-monitor"
+CHECK_INTERVAL=10  # seconds
+
+logger -t "$LOG_TAG" "WiFi monitor started"
+
+declare -A KNOWN_IFACES
+
+while true; do
+    # Find all wireless interfaces
+    for iface_path in /sys/class/net/*/wireless; do
+        [[ -d "$iface_path" ]] || continue
+
+        iface=$(basename "$(dirname "$iface_path")")
+
+        # Skip if already known
+        [[ -n "${KNOWN_IFACES[$iface]:-}" ]] && continue
+
+        logger -t "$LOG_TAG" "Discovered wireless interface: $iface"
+        KNOWN_IFACES[$iface]=1
+
+        # Check if NetworkManager manages it
+        if command -v nmcli &>/dev/null; then
+            local_state=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | grep "^${iface}:" | cut -d: -f2)
+
+            if [[ "$local_state" == "unmanaged" ]] || [[ -z "$local_state" ]]; then
+                logger -t "$LOG_TAG" "Interface $iface is unmanaged, activating..."
+
+                # Randomize MAC first
+                if command -v macchanger &>/dev/null; then
+                    ip link set "$iface" down 2>/dev/null || true
+                    macchanger -r "$iface" 2>/dev/null || true
+                    ip link set "$iface" up 2>/dev/null || true
+                fi
+
+                nmcli device set "$iface" managed yes 2>/dev/null || true
+
+                # Notify
+                /usr/local/bin/tonix-wifi-notify "WiFi interface $iface activated" 2>/dev/null || true
+            fi
+        fi
+    done
+
+    # Detect removed interfaces
+    for known in "${!KNOWN_IFACES[@]}"; do
+        if [[ ! -d "/sys/class/net/$known" ]]; then
+            logger -t "$LOG_TAG" "Interface $known removed"
+            unset "KNOWN_IFACES[$known]"
+        fi
+    done
+
+    sleep "$CHECK_INTERVAL"
+done

@@ -1,0 +1,16 @@
+#!/bin/bash
+# Desktop notification when a WiFi adapter is plugged in
+MSG="${1:-WiFi adapter detected}"
+
+logger -t "tonix-wifi" "$MSG"
+
+# Send desktop notification if X is running
+if [[ -n "${DISPLAY:-}" ]] || [[ -n "$(pgrep -x Xorg 2>/dev/null)" ]]; then
+    export DISPLAY=:0
+    export XAUTHORITY=/root/.Xauthority
+
+    # Try notify-send (works with XFCE notification daemon)
+    if command -v notify-send &>/dev/null; then
+        notify-send -i network-wireless "Tonix WiFi" "$MSG" 2>/dev/null || true
+    fi
+fi

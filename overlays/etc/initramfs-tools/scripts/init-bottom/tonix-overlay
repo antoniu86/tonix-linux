@@ -1,0 +1,70 @@
+#!/bin/sh
+# ============================================================================
+# Tonix — OverlayFS Root
+# ============================================================================
+# Makes the root filesystem immutable by mounting it read-only as the lower
+# layer of an overlayfs, with a tmpfs upper layer for changes.
+#
+# All changes to the OS (package installs, config edits) happen in RAM
+# and disappear on reboot. /home is mounted separately and is NOT affected.
+#
+# Activated by kernel parameter: tonix.overlay=yes
+# Without this parameter, root is mounted normally (read-write).
+#
+# GRUB menu entries control this:
+#   "Tonix"                    → overlay ON  (immutable, clean boot)
+#   "Tonix (Persistent Root)"  → overlay OFF (changes survive reboot)
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+# Check for kernel parameter
+OVERLAY_ENABLED=false
+for param in $(cat /proc/cmdline); do
+    case "$param" in
+        tonix.overlay=yes) OVERLAY_ENABLED=true ;;
+        tonix.overlay=no)  OVERLAY_ENABLED=false ;;
+    esac
+done
+
+if [ "$OVERLAY_ENABLED" != "true" ]; then
+    exit 0
+fi
+
+log_msg="Tonix: Setting up immutable root (overlayfs)"
+echo "$log_msg"
+
+# Paths
+ROOT="${rootmnt}"
+OVERLAY_BASE="/run/tonix-overlay"
+LOWER="${OVERLAY_BASE}/lower"
+UPPER="${OVERLAY_BASE}/upper"
+WORK="${OVERLAY_BASE}/work"
+
+# Create overlay structure in tmpfs
+mkdir -p "$OVERLAY_BASE"
+mount -t tmpfs -o size=75% tmpfs "$OVERLAY_BASE"
+mkdir -p "$LOWER" "$UPPER" "$WORK"
+
+# Move real root to lower (read-only)
+mount --move "$ROOT" "$LOWER"
+mount -o remount,ro "$LOWER"
+
+# Mount overlayfs as new root
+mount -t overlay overlay \
+    -o lowerdir="$LOWER",upperdir="$UPPER",workdir="$WORK" \
+    "$ROOT"
+
+# Make lower and overlay internals accessible inside new root
+# (useful for debugging and for seeing what's changed)
+mkdir -p "${ROOT}/run/tonix-overlay"
+mount --move "$OVERLAY_BASE" "${ROOT}/run/tonix-overlay" 2>/dev/null || true
+
+# Create marker file so the running system knows it's in overlay mode
+mkdir -p "${ROOT}/run"
+echo "active" > "${ROOT}/run/tonix-overlay-active"
+
+echo "Tonix: Immutable root active (changes will not persist)"

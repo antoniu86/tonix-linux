@@ -1,0 +1,13 @@
+[Unit]
+Description=Tonix WiFi Adapter Monitor
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tonix-wifi-monitor
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

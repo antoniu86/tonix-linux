@@ -1,0 +1,17 @@
+#!/bin/bash
+# Tonix — Check overlay root status
+if [[ -f /run/tonix-overlay-active ]]; then
+    echo "Root filesystem: IMMUTABLE (overlayfs)"
+    echo "  Changes live in RAM and will be lost on reboot."
+    echo "  /home is persistent and encrypted (not affected)."
+
+    # Show RAM usage of overlay
+    if mountpoint -q /run/tonix-overlay 2>/dev/null; then
+        used=$(df -h /run/tonix-overlay 2>/dev/null | tail -1 | awk '{print $3}')
+        avail=$(df -h /run/tonix-overlay 2>/dev/null | tail -1 | awk '{print $4}')
+        echo "  Overlay RAM used: ${used:-unknown} / Available: ${avail:-unknown}"
+    fi
+else
+    echo "Root filesystem: PERSISTENT (normal read-write)"
+    echo "  Changes to the OS will survive reboot."
+fi

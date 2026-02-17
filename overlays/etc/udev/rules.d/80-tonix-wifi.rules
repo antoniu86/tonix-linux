@@ -1,0 +1,21 @@
+# Tonix — Alfa WiFi USB Adapter Auto-Detection
+# These rules trigger when known Alfa adapters are plugged in
+
+# AWUS036ACM — MediaTek MT7612U
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7612", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
+    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS036ACM (MT7612U) detected'"
+
+# AWUS036AXML — MediaTek MT7921AUN
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7961", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
+    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS036AXML (MT7921) detected'"
+
+# AWUS1900 — Realtek RTL8814AU
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="8813", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
+    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS1900 (RTL8814AU) detected'"
+
+# Generic: any new wireless interface
+ACTION=="add", SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", \
+    RUN+="/usr/local/bin/tonix-wifi-hotplug '%k'"

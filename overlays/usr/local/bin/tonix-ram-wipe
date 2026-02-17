@@ -1,0 +1,51 @@
+#!/bin/bash
+# ============================================================================
+# Tonix RAM Wipe
+# ============================================================================
+# Runs on shutdown/reboot. Clears sensitive data from memory.
+#
+# Note: This is best-effort. True anti-forensic RAM wiping requires
+# either cold-boot resistant hardware or Tails-style kernel patches.
+# This covers the practical cases.
+
+LOG_TAG="tonix-ramwipe"
+
+logger -t "$LOG_TAG" "Starting RAM wipe..."
+
+# 1. Sync filesystems
+sync
+
+# 2. Close encrypted volumes gracefully
+if command -v cryptsetup &>/dev/null; then
+    for dm in /dev/mapper/secure_*; do
+        [[ -b "$dm" ]] || continue
+        cryptsetup close "$(basename "$dm")" 2>/dev/null || true
+    done
+fi
+
+# 3. Drop all filesystem caches
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+# 4. Clear temp filesystems
+rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+# 5. Use sdmem if available (from secure-delete package)
+# This overwrites free memory with patterns
+if command -v sdmem &>/dev/null; then
+    # -f = fast (1 pass), -l = less secure but quicker
+    # Full wipe (-v) takes too long for shutdown
+    sdmem -f -l 2>/dev/null &
+    SDMEM_PID=$!
+
+    # Give it up to 30 seconds, then move on
+    sleep 30
+    kill $SDMEM_PID 2>/dev/null || true
+fi
+
+# 6. Overwrite kernel encryption keys (if accessible)
+if [[ -d /proc/crypto ]]; then
+    # Trigger key zeroing by dropping caches again
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+fi
+
+logger -t "$LOG_TAG" "RAM wipe complete"

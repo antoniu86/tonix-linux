@@ -1,0 +1,50 @@
+#!/bin/bash
+# ============================================================================
+# Tonix — Early MAC Address Randomization
+# ============================================================================
+# Runs at boot BEFORE NetworkManager to ensure no real MAC address
+# is ever exposed on any network interface.
+#
+# This closes the gap where NetworkManager's own MAC randomization
+# might arrive too late (after a DHCP discover with the real MAC).
+
+LOG_TAG="tonix-early-mac"
+
+logger -t "$LOG_TAG" "Starting early MAC randomization..."
+
+# Randomize all physical network interfaces
+for iface_path in /sys/class/net/*/device; do
+    [[ -e "$iface_path" ]] || continue
+
+    iface=$(basename "$(dirname "$iface_path")")
+
+    # Skip loopback
+    [[ "$iface" == "lo" ]] && continue
+
+    # Bring interface down
+    ip link set "$iface" down 2>/dev/null || continue
+
+    if command -v macchanger &>/dev/null; then
+        # Use macchanger for proper OUI-preserving randomization
+        macchanger -e "$iface" 2>/dev/null && \
+            logger -t "$LOG_TAG" "MAC randomized (macchanger): $iface" || \
+            logger -t "$LOG_TAG" "macchanger failed for $iface, trying manual"
+    fi
+
+    # Fallback: manual MAC randomization if macchanger failed or absent
+    if [[ $? -ne 0 ]] || ! command -v macchanger &>/dev/null; then
+        # Generate random MAC with locally-administered bit set
+        local_mac=$(printf '02:%02x:%02x:%02x:%02x:%02x' \
+            $((RANDOM % 256)) $((RANDOM % 256)) \
+            $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)))
+
+        ip link set "$iface" address "$local_mac" 2>/dev/null && \
+            logger -t "$LOG_TAG" "MAC randomized (manual): $iface → $local_mac" || \
+            logger -t "$LOG_TAG" "Failed to randomize MAC for $iface"
+    fi
+
+    # Bring interface back up
+    ip link set "$iface" up 2>/dev/null || true
+done
+
+logger -t "$LOG_TAG" "Early MAC randomization complete"

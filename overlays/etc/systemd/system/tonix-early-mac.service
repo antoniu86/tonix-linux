@@ -1,0 +1,14 @@
+[Unit]
+Description=Tonix Early MAC Randomization
+DefaultDependencies=no
+Before=network-pre.target NetworkManager.service systemd-networkd.service
+After=systemd-udevd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tonix-early-mac
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

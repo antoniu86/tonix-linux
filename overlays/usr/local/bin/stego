@@ -1,0 +1,3 @@
+#!/bin/bash
+# Tonix stego command — steganography tool
+exec python3 /usr/local/share/stego/cli.py "$@"

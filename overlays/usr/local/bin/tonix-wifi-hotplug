@@ -1,0 +1,37 @@
+#!/bin/bash
+# ============================================================================
+# Tonix WiFi Hotplug Handler
+# ============================================================================
+# Called by udev when a new wireless interface appears.
+# Randomizes MAC address, then hands off to NetworkManager.
+
+IFACE="${1:-}"
+LOG_TAG="tonix-wifi"
+
+[[ -n "$IFACE" ]] || exit 0
+
+logger -t "$LOG_TAG" "New wireless interface detected: $IFACE"
+
+# Wait for interface to be fully initialized
+sleep 2
+
+# Check interface exists
+if [[ ! -d "/sys/class/net/$IFACE" ]]; then
+    logger -t "$LOG_TAG" "Interface $IFACE not found, exiting"
+    exit 0
+fi
+
+# Randomize MAC address for privacy
+if command -v macchanger &>/dev/null; then
+    ip link set "$IFACE" down 2>/dev/null || true
+    macchanger -r "$IFACE" 2>/dev/null && \
+        logger -t "$LOG_TAG" "MAC randomized for $IFACE" || \
+        logger -t "$LOG_TAG" "MAC randomization failed for $IFACE (non-fatal)"
+    ip link set "$IFACE" up 2>/dev/null || true
+fi
+
+# Tell NetworkManager to pick it up
+if command -v nmcli &>/dev/null; then
+    nmcli device set "$IFACE" managed yes 2>/dev/null || true
+    logger -t "$LOG_TAG" "Interface $IFACE handed to NetworkManager"
+fi
