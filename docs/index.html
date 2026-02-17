@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tonix Linux - Portable Encrypted OS</title>
+    <style>
+        :root {
+            --term-green: #00ff00;
+            --term-bg: #0a0a0a;
+            --term-dim: #008800;
+        }
+        body {
+            background-color: var(--term-bg);
+            color: var(--term-green);
+            font-family: 'Courier New', Courier, monospace;
+            padding: 2rem;
+            line-height: 1.6;
+            margin: 0;
+            overflow-x: hidden;
+        }
+
+        /* Matrix Background Canvas */
+        #matrix-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1;
+            opacity: 0.2;
+        }
+
+        #terminal-container {
+            max-width: 850px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+            background: rgba(10, 10, 10, 0.8);
+            padding: 20px;
+            border-radius: 5px;
+            border: 1px solid rgba(0, 255, 0, 0.1);
+        }
+        .ascii-art {
+            white-space: pre;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: var(--term-green);
+            text-shadow: 0 0 5px var(--term-green);
+            font-size: 14px;
+        }
+        .cursor {
+            display: inline-block;
+            width: 10px;
+            height: 1.2em;
+            background-color: var(--term-green);
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+        /* Moved .hidden here with !important so it always overrides everything */
+        .hidden { display: none !important; }
+
+        h2 {
+            border-bottom: 1px dashed var(--term-dim);
+            padding-bottom: 5px;
+            margin-top: 30px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .feature-item {
+            border: 1px solid var(--term-dim);
+            padding: 15px;
+            background: rgba(0, 255, 0, 0.05);
+            backdrop-filter: blur(2px);
+        }
+        .code-block {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--term-dim);
+            padding: 15px;
+            display: block;
+            margin: 15px 0;
+            color: #ccc;
+        }
+        .prompt::before {
+            content: "tony@tonix:~$ ";
+            color: #fff;
+        }
+        a {
+            color: var(--term-green);
+            text-decoration: none;
+            border-bottom: 1px solid var(--term-green);
+        }
+        a:hover {
+            background-color: var(--term-green);
+            color: var(--term-bg);
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="matrix-bg"></canvas>
+
+<div id="terminal-container">
+    <div id="boot-sequence"></div>
+    <span class="cursor" id="boot-cursor"></span>
+
+    <div id="main-content" class="hidden">
+<div class="ascii-art">
+  _____           _            _     _
+ |_   _|__  _ __ (_)_  __     | |   (_)_ __  _   _ __  __
+   | |/ _ \| '_ \| \ \/ /     | |   | | '_ \| | | |\ \/ /
+   | | (_) | | | | |>  <      | |___| | | | | |_| | >  <
+   |_|\___/|_| |_|_/_/\_\     |_____|_|_| |_|\__,_|/_/\_\
+
+</div>
+        <p><strong>Tonix Linux</strong> — Codename: Mirage<br>
+        <strong>Status:</strong> Active / Encrypted / Amnesic</p>
+
+        <p>A custom Debian-based Linux distribution designed to run entirely from a USB drive, leaving no traces on host systems, with full disk encryption for user data and Tails-inspired privacy features.</p>
+
+        <h2>Core Architecture</h2>
+        <div class="feature-grid">
+            <div class="feature-item">
+                <strong>[+] Immutable Root</strong><br>
+                OS runs read-only via overlayfs. Changes live in RAM and vanish on reboot. No host footprint.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Encrypted Vault</strong><br>
+                Persistent /home partition secured via LUKS2 (AES-512-XTS). Survives OS rebuilds and upgrades.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Tor-Only Mode</strong><br>
+                Toggle forces all network traffic through Tor via iptables, blocking direct access and disabling IPv6.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Hardware Spoofing</strong><br>
+                Early MAC address randomization triggers before NetworkManager starts. RAM wiped on shutdown.
+            </div>
+        </div>
+
+        <h2>Deployment</h2>
+        <div class="code-block">
+            <span class="prompt">sudo ./secure-os.sh build</span><br>
+            <span class="prompt">sudo ./secure-os.sh install /dev/sdX</span>
+        </div>
+
+        <h2>Tactical Toolkit</h2>
+        <ul>
+            <li><strong>Steganography:</strong> Custom built-in <code>stego</code> command to hide/extract encrypted data within media files.</li>
+            <li><strong>WiFi Auditing:</strong> Native support for Alfa adapters (AWUS036ACM, AWUS1900) + pre-installed kismet, bettercap, and aircrack-ng.</li>
+            <li><strong>Boot Modes:</strong> Immutable (Default), Persistent Root (Writable), RAM Only, and Recovery.</li>
+        </ul>
+
+        <p style="margin-top: 40px; text-align: center;">
+            <a href="https://github.com/YOUR-USERNAME/YOUR-REPO" target="_blank">[ Access the Source Repository ]</a>
+        </p>
+    </div>
+</div>
+
+<script>
+    // --- MATRIX RAIN EFFECT ---
+    const canvas = document.getElementById('matrix-bg');
+    const ctx = canvas.getContext('2d');
+
+    // Make canvas full screen
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Characters for the rain (Katakana + Latin + Numbers)
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+    const fontSize = 14;
+    const columns = canvas.width / fontSize;
+
+    // Array to track drops
+    const drops = [];
+    for (let x = 0; x < columns; x++) {
+        drops[x] = 1;
+    }
+
+    function drawMatrix() {
+        // Translucent black background to create fading effect
+        ctx.fillStyle = 'rgba(10, 10, 10, 0.05)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#0f0'; // Classic terminal green
+        ctx.font = fontSize + 'px monospace';
+
+        for (let i = 0; i < drops.length; i++) {
+            // Random character
+            const text = chars.charAt(Math.floor(Math.random() * chars.length));
+
+            // Draw character
+            ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+
+            // Reset drop randomly to create varied rain streams
+            if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+                drops[i] = 0;
+            }
+            drops[i]++;
+        }
+    }
+    // Run the matrix animation at ~30 FPS
+    setInterval(drawMatrix, 33);
+
+    // Handle window resize for canvas
+    window.addEventListener('resize', () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    });
+
+
+    // --- BOOT SEQUENCE ANIMATION ---
+    const bootText = [
+        "Initializing boot sequence...",
+        "Loading kernel module: overlayfs... OK",
+        "Mounting tmpfs to /... OK",
+        "Initializing early MAC spoofing... OK",
+        "Decrypting LUKS2 /home partition... SUCCESS",
+        "Starting Tonix Linux - Codename: Mirage...",
+        "Access Granted.\n"
+    ];
+
+    const bootDiv = document.getElementById("boot-sequence");
+    const cursor = document.getElementById("boot-cursor");
+    const mainContent = document.getElementById("main-content");
+    let lineIndex = 0;
+
+    function typeLine() {
+        if (lineIndex < bootText.length) {
+            const line = document.createElement("div");
+            line.textContent = bootText[lineIndex];
+            bootDiv.appendChild(line);
+            lineIndex++;
+            setTimeout(typeLine, 400); // Speed of the boot text
+        } else {
+            setTimeout(() => {
+                bootDiv.classList.add("hidden");
+                cursor.remove(); // This completely deletes the cursor element!
+                mainContent.classList.remove("hidden");
+            }, 500);
+        }
+    }
+
+    // Start the boot animation
+    setTimeout(typeLine, 500);
+</script>
+
+</body>
+</html>
