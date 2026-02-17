@@ -90,8 +90,8 @@ stego scan /path/to/files -r -v             # Scan for hidden data
 
 ```bash
 # Edit config.sh to add/change packages, then:
-sudo ./secure-os.sh build
-sudo ./secure-os.sh install /dev/sdX
+sudo ./tonix.sh build
+sudo ./tonix.sh install /dev/sdX
 # /home is preserved, only /boot and / are replaced
 ```
 
