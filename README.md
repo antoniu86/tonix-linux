@@ -25,13 +25,13 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 
 ```bash
 # 1. Build the OS image (on your Ubuntu machine)
-sudo ./secure-os.sh build
+sudo ./tonix.sh build
 
 # 2a. Install directly to USB (recommended)
-sudo ./secure-os.sh install /dev/sdX
+sudo ./tonix.sh install /dev/sdX
 
 # 2b. OR build an installer ISO
-sudo ./secure-os.sh iso
+sudo ./tonix.sh iso
 ```
 
 ## USB Partition Layout
