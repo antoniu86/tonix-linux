@@ -24,15 +24,20 @@ for iface_path in /sys/class/net/*/device; do
     # Bring interface down
     ip link set "$iface" down 2>/dev/null || continue
 
+    local mac_ok=false
+
     if command -v macchanger &>/dev/null; then
         # Use macchanger for proper OUI-preserving randomization
-        macchanger -e "$iface" 2>/dev/null && \
-            logger -t "$LOG_TAG" "MAC randomized (macchanger): $iface" || \
+        if macchanger -e "$iface" 2>/dev/null; then
+            logger -t "$LOG_TAG" "MAC randomized (macchanger): $iface"
+            mac_ok=true
+        else
             logger -t "$LOG_TAG" "macchanger failed for $iface, trying manual"
+        fi
     fi
 
     # Fallback: manual MAC randomization if macchanger failed or absent
-    if [[ $? -ne 0 ]] || ! command -v macchanger &>/dev/null; then
+    if [[ "$mac_ok" != true ]]; then
         # Generate random MAC with locally-administered bit set
         local_mac=$(printf '02:%02x:%02x:%02x:%02x:%02x' \
             $((RANDOM % 256)) $((RANDOM % 256)) \

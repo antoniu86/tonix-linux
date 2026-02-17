@@ -1,0 +1,9 @@
+[Unit]
+Description=Tonix WiFi Setup for %i
+After=sys-subsystem-net-devices-%i.device
+BindsTo=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tonix-wifi-hotplug %i
+RemainAfterExit=yes

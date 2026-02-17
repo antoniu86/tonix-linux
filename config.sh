@@ -246,9 +246,7 @@ PACKAGES_STEGO=(
 # AWUS036AXML → mt7921u   (in-kernel since 5.18, needs firmware-mediatek)
 # AWUS1900    → rtl8814au (out-of-tree, needs DKMS build)
 PACKAGES_WIFI_EXTRA=(
-    firmware-mediatek
-    dkms
-    linux-headers-amd64
+    # firmware-mediatek, dkms, linux-headers-amd64 already in other arrays
     # rtl8814au driver will be built from source in the build script
 )
 
@@ -394,6 +392,6 @@ PACKAGES_INSTALLER=(
     grub-efi-ia32-bin
     dialog
     pv
-    lsblk
+    util-linux
     usbutils
 )

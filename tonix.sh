@@ -178,6 +178,57 @@ CHROOT_DRIVER
 
     ok "WiFi driver build attempted"
 
+    # --- Phase 3a: Build tools from source ---
+    if [[ ${#WIFI_SECURITY_FROM_SOURCE[@]} -gt 0 ]]; then
+        header "Phase 3a: Building tools from source"
+
+        # Install build-time-only dependencies
+        if [[ ${#BUILD_ONLY_DEPS[@]} -gt 0 ]]; then
+            local build_deps="${BUILD_ONLY_DEPS[*]}"
+            chroot "$CHROOT_DIR" /bin/bash << CHROOT_BUILDDEPS
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt update
+apt install -y $build_deps
+CHROOT_BUILDDEPS
+        fi
+
+        # Build each tool from source
+        for entry in "${WIFI_SECURITY_FROM_SOURCE[@]}"; do
+            local tool_name tool_repo tool_build
+            IFS='|' read -r tool_name tool_repo tool_build <<< "$entry"
+
+            info "Building $tool_name from source..."
+
+            chroot "$CHROOT_DIR" /bin/bash << CHROOT_SRCBUILD
+set -e
+cd /tmp
+if [[ ! -d "$tool_name" ]]; then
+    git clone "$tool_repo" "$tool_name"
+fi
+cd "$tool_name"
+$tool_build || echo "WARN: $tool_name build failed (non-fatal)"
+cd /tmp && rm -rf "$tool_name"
+CHROOT_SRCBUILD
+
+            ok "$tool_name build attempted"
+        done
+
+        # Remove build-only dependencies to save space
+        if [[ ${#BUILD_ONLY_DEPS[@]} -gt 0 ]]; then
+            info "Removing build-only dependencies..."
+            local build_deps="${BUILD_ONLY_DEPS[*]}"
+            chroot "$CHROOT_DIR" /bin/bash << CHROOT_RMBDEPS
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt purge -y $build_deps 2>/dev/null || true
+apt autoremove -y
+CHROOT_RMBDEPS
+        fi
+
+        ok "Source builds complete"
+    fi
+
     # --- Phase 3b: Download and install Tor Browser ---
     header "Phase 3b: Installing Tor Browser"
 
@@ -576,7 +627,29 @@ BASH_PROF
     cp "$INSTALLER_DIR/boot/vmlinuz-$kver"  "$ISO_DIR/live/vmlinuz"
     cp "$INSTALLER_DIR/boot/initrd.img-$kver" "$ISO_DIR/live/initrd.img"
 
-    # GRUB config for ISO
+    # --- Set up ISOLINUX (BIOS boot) ---
+    info "Setting up ISOLINUX for BIOS boot..."
+    mkdir -p "$ISO_DIR/isolinux"
+    cp /usr/lib/ISOLINUX/isolinux.bin "$ISO_DIR/isolinux/"
+    cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$ISO_DIR/isolinux/"
+    cp /usr/lib/syslinux/modules/bios/menu.c32 "$ISO_DIR/isolinux/"
+    cp /usr/lib/syslinux/modules/bios/libutil.c32 "$ISO_DIR/isolinux/"
+
+    cat > "$ISO_DIR/isolinux/isolinux.cfg" << 'ISOLINUX_CFG'
+DEFAULT tonix
+TIMEOUT 50
+PROMPT 0
+
+UI menu.c32
+
+LABEL tonix
+    MENU LABEL Tonix Installer
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live toram
+ISOLINUX_CFG
+
+    # --- Set up GRUB EFI boot ---
+    info "Setting up GRUB for UEFI boot..."
     mkdir -p "$ISO_DIR/boot/grub"
     cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_ISO'
 set timeout=5
@@ -587,6 +660,37 @@ menuentry "Tonix Installer" {
     initrd /live/initrd.img
 }
 GRUB_ISO
+
+    # Create EFI boot image
+    mkdir -p "$ISO_DIR/EFI/boot"
+    local efi_img="$ISO_DIR/boot/grub/efi.img"
+    dd if=/dev/zero of="$efi_img" bs=1M count=4
+    mkfs.vfat "$efi_img"
+
+    local efi_mount
+    efi_mount=$(mktemp -d)
+    mount -o loop "$efi_img" "$efi_mount"
+    mkdir -p "$efi_mount/EFI/boot"
+
+    # Build GRUB EFI binary
+    grub-mkstandalone \
+        --format=x86_64-efi \
+        --output="$efi_mount/EFI/boot/bootx64.efi" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
+
+    # Also build 32-bit EFI for older systems
+    grub-mkstandalone \
+        --format=i386-efi \
+        --output="$efi_mount/EFI/boot/bootia32.efi" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg" 2>/dev/null || \
+        warn "i386-efi standalone not available (non-fatal)"
+
+    umount "$efi_mount"
+    rmdir "$efi_mount"
 
     # Build ISO with xorriso
     info "Creating ISO image..."
@@ -605,12 +709,17 @@ GRUB_ISO
         -no-emul-boot \
         -isohybrid-gpt-basdat \
         "$ISO_DIR" 2>/dev/null || {
-            # Fallback: simpler ISO build
+            # Fallback: simpler ISO build (BIOS only)
             warn "Full hybrid ISO failed, using simpler method..."
             xorriso -as mkisofs \
                 -o "$iso_output" \
                 -R -J \
                 -V "TONIX_INST" \
+                -b isolinux/isolinux.bin \
+                -c isolinux/boot.cat \
+                -no-emul-boot \
+                -boot-load-size 4 \
+                -boot-info-table \
                 "$ISO_DIR"
         }
 

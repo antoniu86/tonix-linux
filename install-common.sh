@@ -195,6 +195,12 @@ format_partitions() {
             --key-file=- \
             "$HOME_PART"
 
+        # Open, format with ext4, then close (mount_target will reopen)
+        echo -n "$HOME_PASSWORD" | cryptsetup open "$HOME_PART" secure_home --key-file=-
+        info "Formatting /home (ext4 inside LUKS)..."
+        mkfs.ext4 -F -L home /dev/mapper/secure_home
+        cryptsetup close secure_home
+
         ok "Encryption setup complete"
     fi
 
