@@ -8,3 +8,6 @@ output/
 
 # macOS
 .DS_Store
+
+# VM drives
+*.qcow2

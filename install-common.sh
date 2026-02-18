@@ -162,7 +162,7 @@ format_partitions() {
     mkfs.vfat -F32 -n TONIX "$BOOT_PART"
 
     info "Formatting / (ext4)..."
-    mkfs.ext4 -F -L root "$ROOT_PART"
+    mkfs.ext4 -F -L root -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$ROOT_PART"
 
     if [[ "$PRESERVE_HOME" == false ]]; then
         echo ""
@@ -198,7 +198,7 @@ format_partitions() {
         # Open, format with ext4, then close (mount_target will reopen)
         echo -n "$HOME_PASSWORD" | cryptsetup open "$HOME_PART" secure_home --key-file=-
         info "Formatting /home (ext4 inside LUKS)..."
-        mkfs.ext4 -F -L home /dev/mapper/secure_home
+        mkfs.ext4 -F -L home -E lazy_itable_init=1,lazy_journal_init=1,nodiscard /dev/mapper/secure_home
         cryptsetup close secure_home
 
         ok "Encryption setup complete"
@@ -211,8 +211,6 @@ format_partitions() {
 # Mount everything
 # ============================================================================
 mount_target() {
-    MOUNT_ROOT="/mnt/tonix-install"
-
     info "Mounting partitions..."
 
     mkdir -p "$MOUNT_ROOT"
@@ -331,6 +329,10 @@ install_bootloader() {
     local root_uuid
     root_uuid=$(blkid -s UUID -o value "$ROOT_PART")
 
+    # Detect actual kernel version instead of using wildcards
+    local kver
+    kver=$(chroot "$MOUNT_ROOT" ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
+
     cat > "$MOUNT_ROOT/boot/grub/grub.cfg" << EOF
 # Tonix GRUB Configuration — Codename: Mirage
 set timeout=5
@@ -341,23 +343,23 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Immutable (default)" {
-    linux /boot/vmlinuz-* root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes apparmor=1 security=apparmor
-    initrd /boot/initrd.img-*
+    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes apparmor=1 security=apparmor
+    initrd /initrd.img-$kver
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Persistent Root (writable)" {
-    linux /boot/vmlinuz-* root=UUID=$root_uuid ro quiet noresume tonix.overlay=no apparmor=1 security=apparmor
-    initrd /boot/initrd.img-*
+    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=no apparmor=1 security=apparmor
+    initrd /initrd.img-$kver
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — RAM Only (entire OS in RAM)" {
-    linux /boot/vmlinuz-* root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes toram apparmor=1 security=apparmor
-    initrd /boot/initrd.img-*
+    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes toram apparmor=1 security=apparmor
+    initrd /initrd.img-$kver
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Recovery" {
-    linux /boot/vmlinuz-* root=UUID=$root_uuid ro single noresume tonix.overlay=no
-    initrd /boot/initrd.img-*
+    linux /vmlinuz-$kver root=UUID=$root_uuid ro single noresume tonix.overlay=no
+    initrd /initrd.img-$kver
 }
 EOF
 
@@ -378,18 +380,17 @@ cleanup() {
     # Clear sensitive variables
     HOME_PASSWORD=""
 
-    # Unmount in reverse order
-    umount "$MOUNT_ROOT/home"  2>/dev/null || true
-    cryptsetup close secure_home 2>/dev/null || true
-    umount "$MOUNT_ROOT/boot"  2>/dev/null || true
-    umount "$MOUNT_ROOT"       2>/dev/null || true
-
-    # Unmount bind mounts if still active
-    umount "$MOUNT_ROOT/dev"   2>/dev/null || true
-    umount "$MOUNT_ROOT/proc"  2>/dev/null || true
-    umount "$MOUNT_ROOT/sys"   2>/dev/null || true
-
-    rmdir "$MOUNT_ROOT" 2>/dev/null || true
+    # Only unmount if MOUNT_ROOT exists
+    if [[ -d "${MOUNT_ROOT:-}" ]]; then
+        umount "$MOUNT_ROOT/home"  2>/dev/null || true
+        cryptsetup close secure_home 2>/dev/null || true
+        umount "$MOUNT_ROOT/boot"  2>/dev/null || true
+        umount "$MOUNT_ROOT/dev"   2>/dev/null || true
+        umount "$MOUNT_ROOT/proc"  2>/dev/null || true
+        umount "$MOUNT_ROOT/sys"   2>/dev/null || true
+        umount "$MOUNT_ROOT"       2>/dev/null || true
+        rmdir "$MOUNT_ROOT" 2>/dev/null || true
+    fi
 
     sync
 
@@ -402,10 +403,10 @@ cleanup() {
 do_install() {
     echo ""
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║            Tonix Installer                             ║"
+    echo "║            Tonix Installer                                 ║"
     echo "╠════════════════════════════════════════════════════════════╣"
-    echo "║  Target:  $TARGET"
-    echo "║  Image:   $(basename "$TARBALL_PATH")"
+    echo "║  Target:  $TARGET                                          ║"
+    echo "║  Image:   $(basename "$TARBALL_PATH")                      ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 
@@ -415,6 +416,8 @@ do_install() {
         read -rp "Continue? (yes/no): " confirm
         [[ "$confirm" == "yes" ]] || { info "Cancelled."; exit 0; }
     fi
+
+    MOUNT_ROOT="/mnt/tonix-install"
 
     trap cleanup EXIT
 
@@ -432,10 +435,10 @@ do_install() {
 
     echo ""
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║  ✓ Installation complete!                                 ║"
-    echo "║                                                           ║"
+    echo "║  ✓ Installation complete!                                  ║"
+    echo "║                                                            ║"
     echo "║  Remove installer media, then boot from $TARGET"
-    echo "║  You will be prompted for your /home encryption password. ║"
+    echo "║  You will be prompted for your /home encryption password.  ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 }

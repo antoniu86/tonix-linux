@@ -95,7 +95,7 @@ PACKAGES_FIRMWARE=(
     firmware-realtek
     firmware-atheros
     firmware-misc-nonfree
-    firmware-mediatek
+    #firmware-mediatek
 )
 
 # --- Networking ---
@@ -188,6 +188,7 @@ PACKAGES_DEV=(
     sqlite3
     dkms
     linux-headers-amd64
+    linux-compiler-gcc-12-x86
 )
 
 # --- Media (minimal) ---
@@ -258,7 +259,10 @@ RTL8814AU_REPO="https://github.com/aircrack-ng/rtl8814au.git"
 PACKAGES_WIFI_SECURITY=(
     # Core WiFi auditing
     aircrack-ng
-    kismet
+    kismet-core
+    kismet-capture-linux-wifi
+    kismet-capture-linux-bluetooth
+    kismet-logtools
     wifite
     hostapd
     reaver
@@ -275,8 +279,8 @@ PACKAGES_WIFI_SECURITY=(
     suricata
     fail2ban
 
-    # DNS protection
-    dnscrypt-proxy
+    # # DNS protection
+    # dnscrypt-proxy
 
     # Password & hash testing (WPA handshake cracking)
     hashcat
@@ -305,6 +309,7 @@ WIFI_SECURITY_FROM_SOURCE=(
 # Bettercap requires Go — added to build-time deps (not installed in final OS)
 BUILD_ONLY_DEPS=(
     golang-go
+    libnl-3-dev
 )
 
 # --- Wordlists (downloaded during build, stored in /opt/wordlists) ---
@@ -342,8 +347,8 @@ PYTHON_PACKAGES=(
 )
 
 # --- Nice to have ---
+# Note: fastfetch is installed separately in tonix.sh (Phase 2c) — not in Debian repos
 PACKAGES_EXTRA=(
-    fastfetch
     geany
     qalculate-gtk
     evince
@@ -394,4 +399,5 @@ PACKAGES_INSTALLER=(
     pv
     util-linux
     usbutils
+    nano
 )

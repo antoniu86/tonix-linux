@@ -113,7 +113,32 @@ do_build() {
 deb $DEBIAN_MIRROR $DEBIAN_RELEASE main contrib non-free non-free-firmware
 deb http://security.debian.org/debian-security ${DEBIAN_RELEASE}-security main contrib non-free non-free-firmware
 deb $DEBIAN_MIRROR ${DEBIAN_RELEASE}-updates main contrib non-free non-free-firmware
+deb $DEBIAN_MIRROR ${DEBIAN_RELEASE}-backports main contrib non-free non-free-firmware
 EOF
+
+    # Add Kismet repo inside chroot (not in Debian repos)
+    info "Adding Kismet repository..."
+    chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_KISMET_REPO'
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt update -q
+apt install -y wget gnupg
+wget -O - https://www.kismetwireless.net/repos/kismet-release.gpg.key --quiet | \
+    gpg --dearmor | tee /usr/share/keyrings/kismet-archive-keyring.gpg >/dev/null
+echo 'deb [signed-by=/usr/share/keyrings/kismet-archive-keyring.gpg] https://www.kismetwireless.net/repos/apt/release/bookworm bookworm main' \
+    > /etc/apt/sources.list.d/kismet.list
+apt update -q
+CHROOT_KISMET_REPO
+
+    # Best-effort packages (firmware + DNS protection)
+    chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_OPTIONAL'
+export DEBIAN_FRONTEND=noninteractive
+for pkg in firmware-mediatek dnscrypt-proxy; do
+    apt install -y "$pkg" 2>/dev/null \
+        && echo "OK: $pkg" \
+        || echo "WARN: $pkg not available, skipping"
+done
+CHROOT_OPTIONAL
 
     local all_packages
     all_packages=$(get_all_packages)
@@ -142,6 +167,21 @@ CHROOT_PIP
 
         ok "Python packages installed"
     fi
+
+    # --- Phase 2c: Install fastfetch (not in Debian bookworm repos) ---
+    header "Phase 2c: Installing fastfetch"
+
+    chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_FASTFETCH'
+set -e
+FASTFETCH_VER="2.23.0"
+wget -q -O /tmp/fastfetch.deb \
+    "https://github.com/fastfetch-cli/fastfetch/releases/download/${FASTFETCH_VER}/fastfetch-linux-amd64.deb" \
+    && dpkg -i /tmp/fastfetch.deb || apt-get install -f -y
+rm -f /tmp/fastfetch.deb
+echo "fastfetch installed"
+CHROOT_FASTFETCH
+
+    ok "fastfetch installed"
 
     # --- Phase 3: Build RTL8814AU driver for AWUS1900 ---
     header "Phase 3: Building RTL8814AU driver (AWUS1900 support)"
@@ -236,11 +276,11 @@ CHROOT_RMBDEPS
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
-TOR_VERSION="14.0.4"
+TOR_VERSION="15.0.6"
 TOR_ARCH="linux-x86_64"
 TOR_LANG="en-US"
 TOR_DIR="/opt/tor-browser"
-TOR_URL="https://www.torproject.org/dist/torbrowser/${TOR_VERSION}/tor-browser-${TOR_ARCH}-${TOR_VERSION}_ALL.tar.xz"
+TOR_URL="https://dist.torproject.org/torbrowser/${TOR_VERSION}/tor-browser-${TOR_ARCH}-${TOR_VERSION}.tar.xz"
 
 echo "Downloading Tor Browser ${TOR_VERSION}..."
 
@@ -248,7 +288,7 @@ mkdir -p "$TOR_DIR"
 cd /tmp
 
 # Download Tor Browser
-if wget -q --timeout=60 "$TOR_URL" -O tor-browser.tar.xz 2>/dev/null; then
+if wget -q --timeout=300 "$TOR_URL" -O tor-browser.tar.xz 2>/dev/null; then
     tar -xJf tor-browser.tar.xz -C "$TOR_DIR" --strip-components=1
     rm -f tor-browser.tar.xz
 
@@ -560,6 +600,11 @@ apt clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 CHROOT_INSTALLER
+
+    # Set root password for installer environment
+    chroot "$INSTALLER_DIR" /bin/bash << 'CHROOT_PASS'
+echo "root:tonix" | chpasswd
+CHROOT_PASS
 
     # Embed the OS tarball
     mkdir -p "$INSTALLER_DIR/opt/tonix"
