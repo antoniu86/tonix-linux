@@ -7,146 +7,220 @@
 #   tonix-tormode off     Normal networking (direct connections)
 #   tonix-tormode status  Show current mode
 #
-# When "on", every outbound connection is routed through Tor via iptables.
-# Any application that tries to connect directly is blocked.
-# Only Tor's own connections to the network are allowed.
+# When "on":
+#   - All outbound TCP is transparently proxied through Tor
+#   - All DNS is redirected to Tor's DNS resolver
+#   - All UDP (except DNS redirect and DHCP) is blocked
+#   - IPv6 is fully blocked (can't bypass via IPv6)
+#   - Direct connections are rejected — nothing leaks
 
 set -euo pipefail
 
 TOR_USER="debian-tor"
-TOR_TRANS_PORT=9040
-TOR_DNS_PORT=5353
-TOR_SOCKS_PORT=9050
-IPTABLES_BACKUP="/tmp/tonix-iptables-backup.rules"
+TOR_TRANS_PORT=9040       # Tor transparent proxy port
+TOR_DNS_PORT=5300         # Tor DNS port — NOT 5353 (that's mDNS/Avahi, causes conflicts)
+TOR_SOCKS_PORT=9050       # Tor SOCKS port (for apps that support it)
+TOR_DROPIN="/etc/tor/torrc.d/tonix-transparent.conf"
 STATE_FILE="/run/tonix-tormode"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 [[ $EUID -eq 0 ]] || { echo -e "${RED}Must be run as root${NC}"; exit 1; }
 
-tor_on() {
-    echo -e "${YELLOW}Activating Tor-only mode...${NC}"
+# ============================================================================
+# Configure Tor for transparent proxying via drop-in (never touches main torrc)
+# ============================================================================
+configure_tor() {
+    mkdir -p /etc/tor/torrc.d
 
-    # Ensure Tor is running
-    if ! systemctl is-active --quiet tor; then
-        systemctl start tor
-        sleep 2
-    fi
+    cat > "$TOR_DROPIN" << EOF
+# Tonix transparent proxy configuration
+# Managed by tonix-tormode — do not edit manually
 
-    # Configure Tor for transparent proxying
-    if ! grep -q "TransPort" /etc/tor/torrc; then
-        cp /etc/tor/torrc /etc/tor/torrc.bak
-        cat >> /etc/tor/torrc << EOF
-
-# Tonix Tor-only mode (auto-added)
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
-TransPort ${TOR_TRANS_PORT}
-DNSPort ${TOR_DNS_PORT}
+TransPort 127.0.0.1:${TOR_TRANS_PORT}
+DNSPort 127.0.0.1:${TOR_DNS_PORT}
+SocksPort ${TOR_SOCKS_PORT}
 EOF
-        systemctl restart tor
-        sleep 3
+
+    # Ensure torrc includes the drop-in directory (idempotent)
+    if ! grep -q "^%include /etc/tor/torrc.d" /etc/tor/torrc; then
+        echo "" >> /etc/tor/torrc
+        echo "# Tonix drop-in configs" >> /etc/tor/torrc
+        echo "%include /etc/tor/torrc.d/*.conf" >> /etc/tor/torrc
     fi
+}
 
-    # Backup current iptables
-    iptables-save > "$IPTABLES_BACKUP"
+# ============================================================================
+# Wait for Tor to bootstrap (up to 60s)
+# ============================================================================
+wait_for_tor() {
+    echo -e "${CYAN}Waiting for Tor to bootstrap...${NC}"
+    local i=0
+    while (( i < 60 )); do
+        if journalctl -u tor -n 30 --no-pager 2>/dev/null | grep -q "Bootstrapped 100%"; then
+            echo -e "${GREEN}Tor is ready.${NC}"
+            return 0
+        fi
+        sleep 2
+        (( i += 2 ))
+        echo -n "."
+    done
+    echo ""
+    echo -e "${YELLOW}Warning: Tor bootstrap timed out — may still be connecting.${NC}"
+    echo -e "${YELLOW}Iptables rules are applied. Traffic will flow once Tor is ready.${NC}"
+}
 
-    # Flush existing rules
-    iptables -F
-    iptables -t nat -F
-    iptables -t mangle -F
+# ============================================================================
+# Apply iptables rules — lock everything down through Tor
+# ============================================================================
+apply_iptables() {
+    # Stop UFW first so it doesn't re-insert rules over ours
+    systemctl stop ufw 2>/dev/null || true
+    ufw disable 2>/dev/null || true
 
-    # --- NAT table: redirect all traffic through Tor ---
+    # Flush everything cleanly
+    iptables  -F
+    iptables  -t nat -F
+    iptables  -t mangle -F
+    iptables  -X 2>/dev/null || true
+    ip6tables -F
+    ip6tables -t nat -F 2>/dev/null || true
+    ip6tables -X 2>/dev/null || true
 
-    # Don't redirect Tor's own traffic (prevent loops)
+    # Block ALL IPv6 — prevents IPv6 leaks bypassing Tor entirely
+    ip6tables -P INPUT   DROP
+    ip6tables -P FORWARD DROP
+    ip6tables -P OUTPUT  DROP
+
+    # ── NAT table: redirect traffic into Tor ──
+
+    # Tor's own traffic must not be redirected (loop prevention)
     iptables -t nat -A OUTPUT -m owner --uid-owner "$TOR_USER" -j RETURN
 
-    # Don't redirect local traffic
+    # Never redirect loopback
+    iptables -t nat -A OUTPUT -o lo -j RETURN
     iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
-    iptables -t nat -A OUTPUT -d 10.0.0.0/8 -j RETURN
-    iptables -t nat -A OUTPUT -d 172.16.0.0/12 -j RETURN
-    iptables -t nat -A OUTPUT -d 192.168.0.0/16 -j RETURN
 
-    # Redirect DNS to Tor
+    # Redirect DNS (UDP + TCP port 53) to Tor's DNS listener
     iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
     iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
 
-    # Redirect all TCP to Tor transparent proxy
+    # Redirect all outbound TCP to Tor's transparent proxy
     iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports "$TOR_TRANS_PORT"
 
-    # --- Filter table: block anything that isn't Tor ---
+    # ── Filter table: enforce no bypass ──
 
-    # Allow established connections
-    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    # Default policies — drop everything not explicitly allowed
+    iptables -P INPUT   DROP
+    iptables -P FORWARD DROP
+    iptables -P OUTPUT  DROP
 
-    # Allow Tor process itself
-    iptables -A OUTPUT -m owner --uid-owner "$TOR_USER" -j ACCEPT
-
-    # Allow loopback
+    # Loopback
+    iptables -A INPUT  -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
 
-    # Allow local network (for DHCP, router access)
-    iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
-    iptables -A OUTPUT -d 192.168.0.0/16 -p udp --dport 67:68 -j ACCEPT
+    # Established/related connections
+    iptables -A INPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-    # Block everything else
+    # Tor process — allowed to reach the internet directly (connects to relays)
+    iptables -A OUTPUT -m owner --uid-owner "$TOR_USER" -j ACCEPT
+
+    # DHCP — needed to get/renew IP address from router
+    iptables -A OUTPUT -p udp --dport 67 -j ACCEPT
+    iptables -A INPUT  -p udp --sport 67 --dport 68 -j ACCEPT
+
+    # Block all remaining UDP — DNS was redirected in nat table above,
+    # anything else hitting filter here is not going through Tor
+    iptables -A OUTPUT -p udp -j REJECT --reject-with icmp-port-unreachable
+
+    # Block everything else outbound
     iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
+}
 
-    # Allow incoming established
-    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-    iptables -A INPUT -i lo -j ACCEPT
-    iptables -A INPUT -j DROP
+# ============================================================================
+# tor_on
+# ============================================================================
+tor_on() {
+    echo -e "${YELLOW}Activating Tor-only mode...${NC}"
 
-    # Mark state
+    configure_tor
+
+    # Start/restart Tor to pick up the new config
+    if systemctl is-active --quiet tor; then
+        systemctl restart tor
+    else
+        systemctl start tor
+    fi
+
+    # Wait for circuits before locking down — avoids the "everything broken" window
+    wait_for_tor
+
+    apply_iptables
+
     echo "on" > "$STATE_FILE"
 
-    echo -e "${GREEN}Tor-only mode ACTIVE${NC}"
-    echo "  All traffic is now routed through Tor."
-    echo "  DNS queries go through Tor."
-    echo "  Direct connections are blocked."
     echo ""
-    echo "  Your Tor IP:"
-    sleep 1
-    curl -s --socks5-hostname 127.0.0.1:${TOR_SOCKS_PORT} https://check.torproject.org/api/ip 2>/dev/null || echo "  (checking...)"
+    echo -e "${GREEN}✔ Tor-only mode ACTIVE${NC}"
+    echo "  All TCP is transparently routed through Tor."
+    echo "  DNS is resolved by Tor (no leaks)."
+    echo "  All UDP except DHCP is blocked."
+    echo "  IPv6 is fully blocked."
+    echo ""
+    echo -n "  Your Tor exit IP: "
+    curl -s --max-time 15 --socks5-hostname 127.0.0.1:${TOR_SOCKS_PORT} \
+        https://check.torproject.org/api/ip 2>/dev/null \
+        | grep -o '"IP":"[^"]*"' | cut -d'"' -f4 \
+        || echo "(checking — Tor may still be warming up, try: tonix-tormode status)"
     echo ""
 }
 
+# ============================================================================
+# tor_off
+# ============================================================================
 tor_off() {
     echo -e "${YELLOW}Deactivating Tor-only mode...${NC}"
 
-    # Remove Tor transparent proxy config
-    if [[ -f /etc/tor/torrc.bak ]]; then
-        mv /etc/tor/torrc.bak /etc/tor/torrc
-        systemctl restart tor 2>/dev/null || true
-    fi
+    # Remove the transparent proxy drop-in
+    rm -f "$TOR_DROPIN"
 
-    # Restore iptables
-    if [[ -f "$IPTABLES_BACKUP" ]]; then
-        iptables-restore < "$IPTABLES_BACKUP"
-        rm -f "$IPTABLES_BACKUP"
-    else
-        # Flush everything and set permissive defaults
-        iptables -F
-        iptables -t nat -F
-        iptables -t mangle -F
-        iptables -P INPUT ACCEPT
-        iptables -P FORWARD ACCEPT
-        iptables -P OUTPUT ACCEPT
-    fi
+    # Restart Tor without transparent proxy config
+    systemctl restart tor 2>/dev/null || true
 
-    # Re-enable UFW if it was active
-    ufw --force enable 2>/dev/null || true
+    # Flush iptables and reset to open defaults
+    iptables  -F
+    iptables  -t nat -F
+    iptables  -t mangle -F
+    iptables  -P INPUT   ACCEPT
+    iptables  -P FORWARD ACCEPT
+    iptables  -P OUTPUT  ACCEPT
+
+    ip6tables -F
+    ip6tables -t nat -F 2>/dev/null || true
+    ip6tables -P INPUT   ACCEPT
+    ip6tables -P FORWARD ACCEPT
+    ip6tables -P OUTPUT  ACCEPT
+
+    # Re-enable UFW
+    systemctl start ufw 2>/dev/null || true
+    ufw --force enable  2>/dev/null || true
 
     echo "off" > "$STATE_FILE"
 
-    echo -e "${GREEN}Normal networking restored${NC}"
-    echo "  Direct connections are now allowed."
+    echo -e "${GREEN}✔ Normal networking restored${NC}"
+    echo "  Direct connections allowed."
     echo "  UFW firewall re-enabled."
 }
 
+# ============================================================================
+# tor_status
+# ============================================================================
 tor_status() {
     local state="off"
     [[ -f "$STATE_FILE" ]] && state=$(cat "$STATE_FILE")
@@ -154,26 +228,42 @@ tor_status() {
     if [[ "$state" == "on" ]]; then
         echo -e "Tor-only mode: ${GREEN}ACTIVE${NC}"
         echo ""
-        echo "Current Tor circuits:"
-        echo "  SOCKS proxy:        127.0.0.1:${TOR_SOCKS_PORT}"
         echo "  Transparent proxy:  127.0.0.1:${TOR_TRANS_PORT}"
-        echo "  DNS:                127.0.0.1:${TOR_DNS_PORT}"
+        echo "  DNS port:           127.0.0.1:${TOR_DNS_PORT}"
+        echo "  SOCKS proxy:        127.0.0.1:${TOR_SOCKS_PORT}"
         echo ""
 
         if systemctl is-active --quiet tor; then
-            echo -e "  Tor service: ${GREEN}running${NC}"
+            echo -e "  Tor service:  ${GREEN}running${NC}"
         else
-            echo -e "  Tor service: ${RED}stopped${NC}"
+            echo -e "  Tor service:  ${RED}stopped (!)${NC}"
         fi
 
         echo ""
-        echo "  Checking IP..."
-        curl -s --max-time 10 --socks5-hostname 127.0.0.1:${TOR_SOCKS_PORT} https://check.torproject.org/api/ip 2>/dev/null || echo "  Could not reach Tor check service"
+        echo -n "  Tor exit IP: "
+        curl -s --max-time 10 --socks5-hostname 127.0.0.1:${TOR_SOCKS_PORT} \
+            https://check.torproject.org/api/ip 2>/dev/null \
+            | grep -o '"IP":"[^"]*"' | cut -d'"' -f4 \
+            || echo "(unreachable)"
+
+        echo ""
+        echo "  Active redirect rules:"
+        iptables -t nat -L OUTPUT --line-numbers -n 2>/dev/null \
+            | grep -E "REDIRECT|redir" || echo "  (none found)"
     else
         echo -e "Tor-only mode: ${YELLOW}OFF${NC} (normal networking)"
+        echo ""
+        if systemctl is-active --quiet tor; then
+            echo -e "  Tor service: ${GREEN}running${NC} (SOCKS available at 127.0.0.1:${TOR_SOCKS_PORT})"
+        else
+            echo -e "  Tor service: ${RED}stopped${NC}"
+        fi
     fi
 }
 
+# ============================================================================
+# Entry point
+# ============================================================================
 case "${1:-}" in
     on|enable)
         tor_on
@@ -189,8 +279,8 @@ case "${1:-}" in
         echo ""
         echo "Usage: tonix-tormode {on|off|status}"
         echo ""
-        echo "  on      Force ALL traffic through Tor"
+        echo "  on      Force ALL traffic through Tor (transparent, no app config needed)"
         echo "  off     Restore normal networking"
-        echo "  status  Show current mode"
+        echo "  status  Show current mode and exit IP"
         ;;
 esac
