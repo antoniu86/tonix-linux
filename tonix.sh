@@ -437,8 +437,19 @@ VERSION_ID="${OS_VERSION}"
 LOGO=tonix-logo
 EOF_OS
 
-# --- Root password (user should change on first boot) ---
-echo "root:tonix" | chpasswd
+# --- Create regular user 'tonix' with sudo access ---
+useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev,wireshark tonix
+echo "tonix:tonix" | chpasswd
+
+# --- Lock root account (no direct root login) ---
+passwd -l root
+
+# --- Disable root login via SSH ---
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-tonix.conf << 'EOF_SSH'
+PermitRootLogin no
+PasswordAuthentication yes
+EOF_SSH
 
 # --- Encryption in initramfs ---
 echo "CRYPTSETUP=y" > /etc/cryptsetup-initramfs/conf-hook
@@ -508,6 +519,7 @@ cat > /etc/motd << 'EOF_MOTD'
   WiFi status:      nmcli device status
   Stego tool:       stego --help
   Change password:  passwd
+  Switch to root:   sudo -i  (password: tonix)
 
 EOF_MOTD
 
@@ -516,15 +528,11 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-tonix.conf << 'EOF_LDM'
 [Seat:*]
 # Uncomment below for auto-login (less secure):
-# autologin-user=root
+# autologin-user=tonix
 # autologin-user-timeout=0
 greeter-hide-users=false
 greeter-show-manual-login=true
 EOF_LDM
-
-# --- Create first regular user (optional) ---
-# useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev user
-# echo "user:changeme" | chpasswd
 
 # --- Update initramfs ---
 update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
@@ -819,6 +827,100 @@ do_clean() {
 # ============================================================================
 # Entry point
 # ============================================================================
+
+# ============================================================================
+# VM TEST: Boot ISO or installed disk in QEMU for quick testing
+# ============================================================================
+do_vm_test() {
+    local mode="${1:-iso}"  # iso | iso-with-disk | disk | disk-bios
+    local disk_file="$PROJECT_DIR/tonix-test.qcow2"
+    local iso_file
+    iso_file=$(ls "$OUTPUT_DIR"/tonix-installer-*.iso 2>/dev/null | tail -1 || true)
+
+    # Check QEMU is available
+    command -v qemu-system-x86_64 &>/dev/null || {
+        warn "qemu-system-x86_64 not found. Install with:"
+        echo "  sudo apt install qemu-system-x86 qemu-kvm"
+        exit 1
+    }
+
+    # KVM acceleration flag
+    local kvm_flag=""
+    [[ -r /dev/kvm ]] && kvm_flag="-enable-kvm" || warn "KVM not available — VM will be slow without it"
+
+    # OVMF (UEFI firmware) — check common paths across distros
+    local ovmf_path=""
+    for p in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/ovmf/x64/OVMF.fd; do
+        [[ -f "$p" ]] && { ovmf_path="$p"; break; }
+    done
+
+    case "$mode" in
+        iso|iso-with-disk)
+            [[ -f "$iso_file" ]] || die "No installer ISO found in $OUTPUT_DIR — run: $0 iso"
+            info "Booting installer ISO in QEMU (UEFI mode)..."
+            info "ISO: $iso_file"
+            echo ""
+
+            local disk_args=""
+            if [[ "$mode" == "iso-with-disk" ]] || [[ ! -f "$disk_file" ]]; then
+                [[ -f "$disk_file" ]] || {
+                    info "Creating 30GB virtual test disk: $disk_file"
+                    qemu-img create -f qcow2 "$disk_file" 30G
+                }
+                disk_args="-drive file=$disk_file,format=qcow2,if=virtio"
+                info "Virtual disk attached: $disk_file"
+                info "Inside the VM, run 'install-tonix' and enter 'vda' as the target device."
+            fi
+            echo ""
+
+            local bios_args=""
+            if [[ -n "$ovmf_path" ]]; then
+                bios_args="-bios $ovmf_path"
+            else
+                warn "OVMF not found — using SeaBIOS (legacy BIOS). For UEFI: sudo apt install ovmf"
+            fi
+
+            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -cdrom "$iso_file"                 $disk_args                 $bios_args                 -boot d                 -vga virtio
+            ;;
+
+        disk|disk-uefi)
+            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file\nRun '$0 vm-test iso-with-disk' first to create and install Tonix."
+            info "Booting installed disk in QEMU (UEFI mode)..."
+
+            local bios_args=""
+            if [[ -n "$ovmf_path" ]]; then
+                bios_args="-bios $ovmf_path"
+            else
+                warn "OVMF not found — install with: sudo apt install ovmf"
+            fi
+
+            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -drive file="$disk_file",format=qcow2,if=virtio                 $bios_args                 -boot c                 -vga virtio
+            ;;
+
+        disk-bios)
+            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file"
+            info "Booting installed disk in QEMU (legacy BIOS mode)..."
+            info "This specifically tests the BIOS boot partition (partition 1)."
+
+            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -drive file="$disk_file",format=qcow2,if=ide                 -boot c                 -vga std
+            ;;
+
+        *)
+            echo ""
+            echo "Usage: $0 vm-test [mode]"
+            echo ""
+            echo "Modes:"
+            echo "  iso             Boot installer ISO in UEFI VM (default)"
+            echo "  iso-with-disk   Boot ISO + attach virtual disk (for full install test)"
+            echo "  disk            Boot installed virtual disk — UEFI"
+            echo "  disk-bios       Boot installed virtual disk — legacy BIOS (tests BIOS boot partition)"
+            echo ""
+            echo "Virtual disk: $disk_file"
+            echo "Requires: qemu-system-x86 qemu-kvm  (optionally: ovmf for UEFI)"
+            ;;
+    esac
+}
+
 case "${1:-help}" in
     build)
         do_build
@@ -832,6 +934,9 @@ case "${1:-help}" in
     clean)
         do_clean
         ;;
+    vm-test)
+        do_vm_test "${2:-iso}"
+        ;;
     *)
         echo ""
         echo "Tonix Build System v${OS_VERSION}"
@@ -840,11 +945,13 @@ case "${1:-help}" in
         echo "  $0 build              Build the OS image (tarball)"
         echo "  $0 install /dev/sdX   Install directly to a USB drive"
         echo "  $0 iso                Build a bootable installer ISO"
-        echo "  $0 clean              Remove build artifacts"
+        echo "  $0 clean              Remove build artifacts
+  $0 vm-test [mode]     Test in QEMU VM (iso/iso-with-disk/disk/disk-bios)"
         echo ""
         echo "Typical workflow:"
         echo "  1. $0 build           # Create OS image"
-        echo "  2. $0 install /dev/sdb   # Write to USB (or: $0 iso)"
+        echo "  2. $0 install /dev/sdb   # Write to USB
+  2b. $0 vm-test iso-with-disk  # Or test in QEMU first (recommended)"
         echo ""
         ;;
 esac

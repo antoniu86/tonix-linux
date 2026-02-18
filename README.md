@@ -11,7 +11,7 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Tor Browser** — Pre-installed alongside Firefox ESR
 - **Early MAC spoofing** — All interfaces randomized before NetworkManager starts
 - **No host footprint** — System runs from USB, nothing written to host disk
-- **Survives OS upgrades** — 3-partition layout preserves /home across rebuilds
+- **Survives OS upgrades** — 4-partition layout preserves /home across rebuilds
 - **Dual boot support** — BIOS (legacy) + UEFI (32-bit and 64-bit)
 - **XFCE desktop** — Lightweight GUI (boots to CLI by default)
 - **Alfa WiFi support** — Auto-detects AWUS036ACM, AWUS036AXML, AWUS1900
@@ -32,19 +32,28 @@ sudo ./tonix.sh install /dev/sdX
 
 # 2b. OR build an installer ISO
 sudo ./tonix.sh iso
+
+# 2c. OR test in a VM first (faster than writing to USB)
+sudo ./tonix.sh vm-test iso-with-disk   # boot ISO + attach virtual disk
+# Inside the VM: run 'install-tonix', enter 'vda' as target
+sudo ./tonix.sh vm-test disk            # boot the installed VM disk (UEFI)
+sudo ./tonix.sh vm-test disk-bios       # boot the installed VM disk (legacy BIOS)
 ```
 
 ## USB Partition Layout
 
 ```
 32GB USB Drive:
-+-----------+----------------------------+--------------------------+
-| /boot     | /  (root)                  | /home                    |
-| 512MB     | 10GB, ext4                 | remaining, LUKS2         |
-| FAT32     | read-only via overlayfs    | encrypted, persistent    |
-| UEFI ESP  | tmpfs overlay (RAM)        | your data survives here  |
-+-----------+----------------------------+--------------------------+
++----------+-----------+----------------------------+--------------------------+
+| BIOS boot | /boot     | /  (root)                  | /home                    |
+| 1MB       | 512MB     | 10GB, ext4                 | remaining, LUKS2         |
+| bios_grub | FAT32     | read-only via overlayfs    | encrypted, persistent    |
+| (no fs)   | UEFI ESP  | tmpfs overlay (RAM)        | your data survives here  |
++----------+-----------+----------------------------+--------------------------+
+  part 1      part 2       part 3                       part 4
 ```
+
+The BIOS boot partition (part 1) is required for GPT disks to boot in legacy BIOS mode. It holds no filesystem — GRUB embeds its boot code there directly. Part 2 is the EFI System Partition used for UEFI boot.
 
 ## GRUB Boot Menu
 
@@ -92,7 +101,8 @@ stego scan /path/to/files -r -v             # Scan for hidden data
 # Edit config.sh to add/change packages, then:
 sudo ./tonix.sh build
 sudo ./tonix.sh install /dev/sdX
-# /home is preserved, only /boot and / are replaced
+# /home (part 4) is preserved — only /boot (part 2) and / (part 3) are replaced
+# The BIOS boot partition (part 1) is also left untouched
 ```
 
 Temporary installs work too: `apt install something` in immutable mode lives in RAM and disappears on reboot. Your /home data is untouched either way.
@@ -101,7 +111,7 @@ Temporary installs work too: `apt install something` in immutable mode lives in 
 
 ```
 tonix/
-├── secure-os.sh                    Main entry point (build / install / iso)
+├── tonix.sh                        Main entry point (build / install / iso / vm-test)
 ├── config.sh                       All package lists and settings
 ├── install-common.sh               Shared install logic
 ├── overlays/
@@ -146,6 +156,13 @@ tonix/
 - Internet connection (~2-4GB download)
 - Root access
 
+For VM testing (`vm-test`): `sudo apt install qemu-system-x86 qemu-kvm ovmf`
+
 ## Default Credentials
 
-- Root password: `tonix` (change immediately with `passwd`)
+| Context | Username | Password |
+|---------|----------|----------|
+| Installed OS | `tonix` | `tonix` |
+| Installer ISO (live env) | `root` | `tonix` |
+
+Direct root login is disabled on the installed system — root account is locked. Use `sudo -i` to get a root shell when needed.
