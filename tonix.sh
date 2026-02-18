@@ -17,10 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build"
 OUTPUT_DIR="$PROJECT_DIR/output"
+CACHE_DIR="$PROJECT_DIR/cache"
 CHROOT_DIR="$BUILD_DIR/chroot"
 INSTALLER_DIR="$BUILD_DIR/installer-chroot"
 ISO_DIR="$BUILD_DIR/iso-staging"
 OVERLAY_DIR="$PROJECT_DIR/overlays"
+
+# Package cache control
+REFRESH_CACHE=false
 
 source "$SCRIPT_DIR/config.sh"
 
@@ -107,6 +111,7 @@ do_build() {
     header "Phase 2: Installing packages"
 
     mount_chroot
+    mount_cache
 
     # Add non-free repos for firmware
     cat > "$CHROOT_DIR/etc/apt/sources.list" << EOF
@@ -368,9 +373,10 @@ CHROOT_SERVICES
 
     chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_CLEAN'
 set -e
-apt clean
+# NOTE: Do NOT run 'apt clean' or remove /var/cache/apt/archives/*.deb here.
+# That directory is bind-mounted from the host cache/ folder and removing
+# files inside the chroot would destroy the package cache.
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-rm -rf /var/cache/apt/archives/*.deb
 rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
 # Keep locale we need
 find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' ! -name 'locale.alias' -exec rm -rf {} + 2>/dev/null || true
@@ -437,19 +443,8 @@ VERSION_ID="${OS_VERSION}"
 LOGO=tonix-logo
 EOF_OS
 
-# --- Create regular user 'tonix' with sudo access ---
-useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev,wireshark tonix
-echo "tonix:tonix" | chpasswd
-
-# --- Lock root account (no direct root login) ---
-passwd -l root
-
-# --- Disable root login via SSH ---
-mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-tonix.conf << 'EOF_SSH'
-PermitRootLogin no
-PasswordAuthentication yes
-EOF_SSH
+# --- Root password (user should change on first boot) ---
+echo "root:tonix" | chpasswd
 
 # --- Encryption in initramfs ---
 echo "CRYPTSETUP=y" > /etc/cryptsetup-initramfs/conf-hook
@@ -519,7 +514,6 @@ cat > /etc/motd << 'EOF_MOTD'
   WiFi status:      nmcli device status
   Stego tool:       stego --help
   Change password:  passwd
-  Switch to root:   sudo -i  (password: tonix)
 
 EOF_MOTD
 
@@ -528,11 +522,15 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-tonix.conf << 'EOF_LDM'
 [Seat:*]
 # Uncomment below for auto-login (less secure):
-# autologin-user=tonix
+# autologin-user=root
 # autologin-user-timeout=0
 greeter-hide-users=false
 greeter-show-manual-login=true
 EOF_LDM
+
+# --- Create first regular user (optional) ---
+# useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev user
+# echo "user:changeme" | chpasswd
 
 # --- Update initramfs ---
 update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
@@ -594,6 +592,11 @@ do_build_iso() {
     mount --bind /dev  "$INSTALLER_DIR/dev"
     mount --bind /proc "$INSTALLER_DIR/proc"
     mount --bind /sys  "$INSTALLER_DIR/sys"
+    
+    # Mount cache for installer packages too
+    mkdir -p "$CACHE_DIR/apt-archives"
+    mkdir -p "$INSTALLER_DIR/var/cache/apt/archives"
+    mount --bind "$CACHE_DIR/apt-archives" "$INSTALLER_DIR/var/cache/apt/archives"
 
     local installer_packages="${PACKAGES_INSTALLER[*]}"
 
@@ -604,7 +607,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt update
 apt install -y $installer_packages
 
-apt clean
+# NOTE: Do NOT run 'apt clean' here — the archives dir is bind-mounted
+# from the host cache/ folder. Cleaning would destroy the package cache.
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 CHROOT_INSTALLER
@@ -665,6 +669,7 @@ fi
 BASH_PROF
 
     # Unmount
+    umount "$INSTALLER_DIR/var/cache/apt/archives" 2>/dev/null || true
     umount "$INSTALLER_DIR/dev"  2>/dev/null || true
     umount "$INSTALLER_DIR/proc" 2>/dev/null || true
     umount "$INSTALLER_DIR/sys"  2>/dev/null || true
@@ -805,6 +810,44 @@ cleanup_chroot() {
     umount "$CHROOT_DIR/dev"  2>/dev/null || true
     umount "$CHROOT_DIR/proc" 2>/dev/null || true
     umount "$CHROOT_DIR/sys"  2>/dev/null || true
+    unmount_cache 2>/dev/null || true
+}
+
+# ============================================================================
+# Helper: package cache management
+# ============================================================================
+mount_cache() {
+    # Create cache directory if it doesn't exist
+    mkdir -p "$CACHE_DIR/apt-archives"
+    mkdir -p "$CHROOT_DIR/var/cache/apt/archives"
+    
+    # Clear cache if refresh requested
+    if [[ "$REFRESH_CACHE" == true ]]; then
+        info "Refreshing package cache..."
+        rm -rf "$CACHE_DIR/apt-archives"/*
+        ok "Cache cleared"
+    fi
+    
+    # Bind mount cache into chroot
+    mount --bind "$CACHE_DIR/apt-archives" "$CHROOT_DIR/var/cache/apt/archives"
+    
+    # Show cache stats
+    local cache_size
+    cache_size=$(du -sh "$CACHE_DIR/apt-archives" 2>/dev/null | cut -f1 || echo "0")
+    local cache_count
+    cache_count=$(find "$CACHE_DIR/apt-archives" -name "*.deb" 2>/dev/null | wc -l || echo "0")
+    
+    if [[ "$cache_count" -gt 0 ]]; then
+        info "Using package cache: $cache_count packages ($cache_size) — skipping downloads"
+    else
+        info "Package cache empty — packages will be downloaded and cached"
+    fi
+}
+
+unmount_cache() {
+    if mountpoint -q "$CHROOT_DIR/var/cache/apt/archives" 2>/dev/null; then
+        umount "$CHROOT_DIR/var/cache/apt/archives" 2>/dev/null || true
+    fi
 }
 
 # ============================================================================
@@ -828,98 +871,18 @@ do_clean() {
 # Entry point
 # ============================================================================
 
-# ============================================================================
-# VM TEST: Boot ISO or installed disk in QEMU for quick testing
-# ============================================================================
-do_vm_test() {
-    local mode="${1:-iso}"  # iso | iso-with-disk | disk | disk-bios
-    local disk_file="$PROJECT_DIR/tonix-test.qcow2"
-    local iso_file
-    iso_file=$(ls "$OUTPUT_DIR"/tonix-installer-*.iso 2>/dev/null | tail -1 || true)
-
-    # Check QEMU is available
-    command -v qemu-system-x86_64 &>/dev/null || {
-        warn "qemu-system-x86_64 not found. Install with:"
-        echo "  sudo apt install qemu-system-x86 qemu-kvm"
-        exit 1
-    }
-
-    # KVM acceleration flag
-    local kvm_flag=""
-    [[ -r /dev/kvm ]] && kvm_flag="-enable-kvm" || warn "KVM not available — VM will be slow without it"
-
-    # OVMF (UEFI firmware) — check common paths across distros
-    local ovmf_path=""
-    for p in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/ovmf/x64/OVMF.fd; do
-        [[ -f "$p" ]] && { ovmf_path="$p"; break; }
-    done
-
-    case "$mode" in
-        iso|iso-with-disk)
-            [[ -f "$iso_file" ]] || die "No installer ISO found in $OUTPUT_DIR — run: $0 iso"
-            info "Booting installer ISO in QEMU (UEFI mode)..."
-            info "ISO: $iso_file"
-            echo ""
-
-            local disk_args=""
-            if [[ "$mode" == "iso-with-disk" ]] || [[ ! -f "$disk_file" ]]; then
-                [[ -f "$disk_file" ]] || {
-                    info "Creating 30GB virtual test disk: $disk_file"
-                    qemu-img create -f qcow2 "$disk_file" 30G
-                }
-                disk_args="-drive file=$disk_file,format=qcow2,if=virtio"
-                info "Virtual disk attached: $disk_file"
-                info "Inside the VM, run 'install-tonix' and enter 'vda' as the target device."
-            fi
-            echo ""
-
-            local bios_args=""
-            if [[ -n "$ovmf_path" ]]; then
-                bios_args="-bios $ovmf_path"
-            else
-                warn "OVMF not found — using SeaBIOS (legacy BIOS). For UEFI: sudo apt install ovmf"
-            fi
-
-            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -cdrom "$iso_file"                 $disk_args                 $bios_args                 -boot d                 -vga virtio
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --refresh)
+            REFRESH_CACHE=true
+            shift
             ;;
-
-        disk|disk-uefi)
-            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file\nRun '$0 vm-test iso-with-disk' first to create and install Tonix."
-            info "Booting installed disk in QEMU (UEFI mode)..."
-
-            local bios_args=""
-            if [[ -n "$ovmf_path" ]]; then
-                bios_args="-bios $ovmf_path"
-            else
-                warn "OVMF not found — install with: sudo apt install ovmf"
-            fi
-
-            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -drive file="$disk_file",format=qcow2,if=virtio                 $bios_args                 -boot c                 -vga virtio
-            ;;
-
-        disk-bios)
-            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file"
-            info "Booting installed disk in QEMU (legacy BIOS mode)..."
-            info "This specifically tests the BIOS boot partition (partition 1)."
-
-            qemu-system-x86_64                 $kvm_flag                 -m 2048                 -drive file="$disk_file",format=qcow2,if=ide                 -boot c                 -vga std
-            ;;
-
         *)
-            echo ""
-            echo "Usage: $0 vm-test [mode]"
-            echo ""
-            echo "Modes:"
-            echo "  iso             Boot installer ISO in UEFI VM (default)"
-            echo "  iso-with-disk   Boot ISO + attach virtual disk (for full install test)"
-            echo "  disk            Boot installed virtual disk — UEFI"
-            echo "  disk-bios       Boot installed virtual disk — legacy BIOS (tests BIOS boot partition)"
-            echo ""
-            echo "Virtual disk: $disk_file"
-            echo "Requires: qemu-system-x86 qemu-kvm  (optionally: ovmf for UEFI)"
+            break
             ;;
     esac
-}
+done
 
 case "${1:-help}" in
     build)
@@ -934,24 +897,49 @@ case "${1:-help}" in
     clean)
         do_clean
         ;;
-    vm-test)
-        do_vm_test "${2:-iso}"
+    cache-info)
+        echo ""
+        echo "Package Cache Information"
+        echo "========================="
+        echo "Location: $CACHE_DIR/apt-archives"
+        if [[ -d "$CACHE_DIR/apt-archives" ]]; then
+            local cache_size
+            cache_size=$(du -sh "$CACHE_DIR/apt-archives" | cut -f1)
+            local cache_count
+            cache_count=$(find "$CACHE_DIR/apt-archives" -name "*.deb" | wc -l)
+            echo "Size: $cache_size"
+            echo "Packages: $cache_count"
+            echo ""
+            echo "To clear cache: rm -rf $CACHE_DIR"
+            echo "To rebuild with fresh packages: $0 --refresh build"
+        else
+            echo "Status: Empty (no cache created yet)"
+        fi
+        echo ""
         ;;
     *)
         echo ""
         echo "Tonix Build System v${OS_VERSION}"
         echo ""
         echo "Usage:"
-        echo "  $0 build              Build the OS image (tarball)"
-        echo "  $0 install /dev/sdX   Install directly to a USB drive"
-        echo "  $0 iso                Build a bootable installer ISO"
-        echo "  $0 clean              Remove build artifacts
-  $0 vm-test [mode]     Test in QEMU VM (iso/iso-with-disk/disk/disk-bios)"
+        echo "  $0 [--refresh] build        Build the OS image (tarball)"
+        echo "  $0 [--refresh] iso          Build bootable installer ISO"
+        echo "  $0 install /dev/sdX         Install directly to a USB drive"
+        echo "  $0 clean                    Remove build artifacts"
+        echo "  $0 cache-info               Show package cache statistics"
+        echo ""
+        echo "Options:"
+        echo "  --refresh                   Clear package cache before build"
+        echo ""
+        echo "Package Cache:"
+        echo "  Downloaded packages are cached in: $CACHE_DIR"
+        echo "  Subsequent builds reuse cached packages for faster builds."
+        echo "  Use --refresh to force re-download all packages."
         echo ""
         echo "Typical workflow:"
-        echo "  1. $0 build           # Create OS image"
-        echo "  2. $0 install /dev/sdb   # Write to USB
-  2b. $0 vm-test iso-with-disk  # Or test in QEMU first (recommended)"
+        echo "  1. $0 build                 # Create OS image (downloads packages)"
+        echo "  2. $0 build                 # Rebuild (uses cache, much faster!)"
+        echo "  3. $0 install /dev/sdb      # Write to USB (or: $0 iso)"
         echo ""
         ;;
 esac

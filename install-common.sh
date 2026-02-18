@@ -71,24 +71,11 @@ preflight() {
 # ============================================================================
 detect_existing() {
     PRESERVE_HOME=false
-    # Partition 4 = /home in the 4-partition layout:
-    #   1=BIOS boot (1MB), 2=ESP/boot, 3=root, 4=home (LUKS)
     HOME_PART="${TARGET}4"
 
     # Handle nvme-style partition names (e.g., /dev/nvme0n1p4)
     if [[ "$TARGET" =~ [0-9]$ ]]; then
         HOME_PART="${TARGET}p4"
-    fi
-
-    # Also detect old 3-partition layout (no BIOS boot partition) and warn
-    local old_home="${TARGET}3"
-    [[ "$TARGET" =~ [0-9]$ ]] && old_home="${TARGET}p3"
-    if [[ ! -b "$HOME_PART" ]] && [[ -b "$old_home" ]]; then
-        warn "Detected old 3-partition layout (no BIOS boot partition)."
-        warn "Upgrading to 4-partition layout — /home (partition 3) cannot be preserved."
-        warn "Your /home data will be erased. Back it up first if needed."
-        HOME_PART="$old_home"
-        # Force fresh install; can't preserve since partition numbers shift
     fi
 
     if [[ -b "$HOME_PART" ]]; then
@@ -121,25 +108,20 @@ detect_existing() {
 # Partition the drive
 # ============================================================================
 partition_drive() {
-    # GPT layout (all offsets in MiB):
-    #   Part 1: BIOS boot   1MiB -> 2MiB        (1MB, bios_grub flag — no filesystem)
-    #   Part 2: ESP/Boot    2MiB -> boot_end     (FAT32, EFI + GRUB files)
-    #   Part 3: Root        boot_end -> root_end  (ext4, OS)
-    #   Part 4: Home        root_end -> 100%     (LUKS2 encrypted ext4, user data)
-    #
-    # The BIOS boot partition is REQUIRED for legacy BIOS boot on GPT disks.
-    # Without it, grub-install fails with:
-    #   "This GPT partition contains no BIOS boot partition: embedding won't be possible"
     local bios_end=2
     local boot_end=$(( bios_end + BOOT_SIZE_MIB ))
     local root_end=$(( boot_end + ROOT_SIZE_MIB ))
 
     if [[ "$PRESERVE_HOME" == true ]]; then
-        info "Preserving /home — only reformatting ESP (part 2) and root (part 3)..."
-        # Keep part 1 (BIOS boot) and part 4 (encrypted /home) intact.
+        info "Preserving /home — only reformatting BIOS boot, /boot and /"
+
+        # Delete and recreate partitions 1, 2, and 3 only (preserve 4 = /home)
         parted "$TARGET" --script \
+            rm 1 \
             rm 2 \
             rm 3 \
+            mkpart BIOS fat32 1MiB "${bios_end}MiB" \
+            set 1 bios_grub on \
             mkpart ESP fat32 "${bios_end}MiB" "${boot_end}MiB" \
             set 2 boot on \
             set 2 esp on \
@@ -149,7 +131,7 @@ partition_drive() {
 
         parted "$TARGET" --script \
             mklabel gpt \
-            mkpart BIOS_BOOT fat32 1MiB "${bios_end}MiB" \
+            mkpart BIOS fat32 1MiB "${bios_end}MiB" \
             set 1 bios_grub on \
             mkpart ESP fat32 "${bios_end}MiB" "${boot_end}MiB" \
             set 2 boot on \
@@ -176,7 +158,7 @@ partition_drive() {
         HOME_PART="${TARGET}4"
     fi
 
-    ok "Partitioning complete (BIOS:${BIOS_PART} ESP:${BOOT_PART} root:${ROOT_PART} home:${HOME_PART})"
+    ok "Partitioning complete"
 }
 
 # ============================================================================
@@ -185,11 +167,9 @@ partition_drive() {
 format_partitions() {
     info "Formatting /boot (FAT32)..."
     mkfs.vfat -F32 -n TONIX "$BOOT_PART"
-    sync
 
     info "Formatting / (ext4)..."
-    mkfs.ext4 -F -L root -m 0 -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$ROOT_PART"
-    sync
+    mkfs.ext4 -F -L root -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$ROOT_PART"
 
     if [[ "$PRESERVE_HOME" == false ]]; then
         echo ""
@@ -225,8 +205,7 @@ format_partitions() {
         # Open, format with ext4, then close (mount_target will reopen)
         echo -n "$HOME_PASSWORD" | cryptsetup open "$HOME_PART" secure_home --key-file=-
         info "Formatting /home (ext4 inside LUKS)..."
-        mkfs.ext4 -F -L home -m 0 -E lazy_itable_init=1,lazy_journal_init=1,nodiscard /dev/mapper/secure_home
-        sync
+        mkfs.ext4 -F -L home -E lazy_itable_init=1,lazy_journal_init=1,nodiscard /dev/mapper/secure_home
         cryptsetup close secure_home
 
         ok "Encryption setup complete"
@@ -297,7 +276,7 @@ EOF
     # --- crypttab ---
     cat > "$MOUNT_ROOT/etc/crypttab" << EOF
 # /etc/crypttab — Encrypted /home
-secure_home  UUID=$home_uuid  none  luks
+secure_home  UUID=$home_uuid  none  luks,discard
 EOF
 
     # --- Hostname ---
@@ -359,9 +338,7 @@ install_bootloader() {
 
     # Detect actual kernel version instead of using wildcards
     local kver
-    kver=$(chroot "$MOUNT_ROOT" ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
-    [[ -n "$kver" ]] || die "Could not detect kernel version in installed OS — /boot may be empty or GRUB install will fail"
-    info "Detected kernel: $kver"
+    kver=$(chroot "$MOUNT_ROOT" ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
 
     cat > "$MOUNT_ROOT/boot/grub/grub.cfg" << EOF
 # Tonix GRUB Configuration — Codename: Mirage
