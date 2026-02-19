@@ -78,6 +78,17 @@ detect_existing() {
         HOME_PART="${TARGET}p4"
     fi
 
+    # Also detect old 3-partition layout (no BIOS boot partition) and warn
+    local old_home="${TARGET}3"
+    [[ "$TARGET" =~ [0-9]$ ]] && old_home="${TARGET}p3"
+    if [[ ! -b "$HOME_PART" ]] && [[ -b "$old_home" ]]; then
+        warn "Detected old 3-partition layout (no BIOS boot partition)."
+        warn "Upgrading to 4-partition layout — /home (partition 3) cannot be preserved."
+        warn "Your /home data will be erased. Back it up first if needed."
+        HOME_PART="$old_home"
+        # Force fresh install; can't preserve since partition numbers shift
+    fi
+
     if [[ -b "$HOME_PART" ]]; then
         echo ""
         warn "Found existing partition: $HOME_PART"
@@ -113,15 +124,11 @@ partition_drive() {
     local root_end=$(( boot_end + ROOT_SIZE_MIB ))
 
     if [[ "$PRESERVE_HOME" == true ]]; then
-        info "Preserving /home — only reformatting BIOS boot, /boot and /"
-
-        # Delete and recreate partitions 1, 2, and 3 only (preserve 4 = /home)
+        info "Preserving /home — only reformatting ESP (part 2) and root (part 3)..."
+        # Keep part 1 (BIOS boot) and part 4 (encrypted /home) intact.
         parted "$TARGET" --script \
-            rm 1 \
             rm 2 \
             rm 3 \
-            mkpart BIOS fat32 1MiB "${bios_end}MiB" \
-            set 1 bios_grub on \
             mkpart ESP fat32 "${bios_end}MiB" "${boot_end}MiB" \
             set 2 boot on \
             set 2 esp on \
@@ -158,7 +165,7 @@ partition_drive() {
         HOME_PART="${TARGET}4"
     fi
 
-    ok "Partitioning complete"
+    ok "Partitioning complete (BIOS:${BIOS_PART} ESP:${BOOT_PART} root:${ROOT_PART} home:${HOME_PART})"
 }
 
 # ============================================================================
@@ -167,9 +174,21 @@ partition_drive() {
 format_partitions() {
     info "Formatting /boot (FAT32)..."
     mkfs.vfat -F32 -n TONIX "$BOOT_PART"
+    sync
+
+    # Write a marker file to the boot partition root.
+    # The embedded GRUB EFI binary searches for /.tonix-boot to reliably
+    # identify the boot partition without confusing it with the root ext4.
+    local boot_tmp
+    boot_tmp=$(mktemp -d)
+    mount "$BOOT_PART" "$boot_tmp"
+    touch "$boot_tmp/.tonix-boot"
+    umount "$boot_tmp"
+    rmdir "$boot_tmp"
 
     info "Formatting / (ext4)..."
-    mkfs.ext4 -F -L root -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$ROOT_PART"
+    mkfs.ext4 -F -L root -m 0 -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$ROOT_PART"
+    sync
 
     if [[ "$PRESERVE_HOME" == false ]]; then
         echo ""
@@ -205,7 +224,8 @@ format_partitions() {
         # Open, format with ext4, then close (mount_target will reopen)
         echo -n "$HOME_PASSWORD" | cryptsetup open "$HOME_PART" secure_home --key-file=-
         info "Formatting /home (ext4 inside LUKS)..."
-        mkfs.ext4 -F -L home -E lazy_itable_init=1,lazy_journal_init=1,nodiscard /dev/mapper/secure_home
+        mkfs.ext4 -F -L home -m 0 -E lazy_itable_init=1,lazy_journal_init=1,nodiscard /dev/mapper/secure_home
+        sync
         cryptsetup close secure_home
 
         ok "Encryption setup complete"
@@ -276,7 +296,7 @@ EOF
     # --- crypttab ---
     cat > "$MOUNT_ROOT/etc/crypttab" << EOF
 # /etc/crypttab — Encrypted /home
-secure_home  UUID=$home_uuid  none  luks,discard
+secure_home  UUID=$home_uuid  none  luks
 EOF
 
     # --- Hostname ---
@@ -297,6 +317,11 @@ update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
 
 CHROOT_INIT
 
+    # Clean up our own bind mounts (install_bootloader will create its own)
+    umount "$MOUNT_ROOT/dev"  2>/dev/null || true
+    umount "$MOUNT_ROOT/proc" 2>/dev/null || true
+    umount "$MOUNT_ROOT/sys"  2>/dev/null || true
+
     ok "Initramfs updated"
 }
 
@@ -306,71 +331,280 @@ CHROOT_INIT
 install_bootloader() {
     info "Installing GRUB bootloader (BIOS + UEFI)..."
 
-    # --- UEFI (64-bit) ---
-    mkdir -p "$MOUNT_ROOT/boot/EFI/BOOT"
-    chroot "$MOUNT_ROOT" grub-install \
-        --target=x86_64-efi \
-        --efi-directory=/boot \
-        --boot-directory=/boot \
-        --removable \
-        --no-nvram \
-        2>/dev/null || warn "x86_64-efi GRUB install had warnings (may be OK)"
+    # Bind mounts should already be up from configure_system(), but ensure
+    # they're present (defensive — makes this function self-contained)
+    mountpoint -q "$MOUNT_ROOT/dev"  2>/dev/null || mount --bind /dev  "$MOUNT_ROOT/dev"
+    mountpoint -q "$MOUNT_ROOT/proc" 2>/dev/null || mount --bind /proc "$MOUNT_ROOT/proc"
+    mountpoint -q "$MOUNT_ROOT/sys"  2>/dev/null || mount --bind /sys  "$MOUNT_ROOT/sys"
 
-    # --- UEFI (32-bit, for older UEFI systems) ---
-    chroot "$MOUNT_ROOT" grub-install \
-        --target=i386-efi \
-        --efi-directory=/boot \
-        --boot-directory=/boot \
-        --removable \
-        --no-nvram \
-        2>/dev/null || warn "i386-efi GRUB install had warnings (may be OK)"
+    # Mount efivarfs if available (some grub-install versions probe for it)
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+        mkdir -p "$MOUNT_ROOT/sys/firmware/efi/efivars"
+        mount --bind /sys/firmware/efi/efivars "$MOUNT_ROOT/sys/firmware/efi/efivars" 2>/dev/null || true
+    fi
 
     # --- BIOS (legacy) ---
-    chroot "$MOUNT_ROOT" grub-install \
-        --target=i386-pc \
-        --boot-directory=/boot \
-        "$TARGET" \
-        2>/dev/null || warn "i386-pc GRUB install had warnings (may be OK)"
+    #
+    # We do NOT use grub-install for the BIOS core image.
+    #
+    # grub-install calls grub-probe to find which device backs the
+    # --boot-directory path and embeds that as the prefix. But during install:
+    #
+    #   - From a live ISO: grub-probe sees the ISO's own filesystem backing
+    #     $MOUNT_ROOT/boot, not TARGET. It embeds the ISO device as prefix.
+    #   - From a chroot: grub-probe cannot resolve block devices at all.
+    #
+    # Either way the embedded prefix is wrong, and GRUB drops to rescue shell.
+    #
+    # Instead we use grub-mkimage with an EXPLICIT prefix: (,gpt2)/grub
+    # The (,gpt2) syntax means "current disk, partition 2" — GRUB resolves
+    # "current disk" at runtime as whichever disk the MBR was read from.
+    # This is always correct regardless of whether the target is hd0, hd1,
+    # vda, sda, or any other disk name.
+    #
+    info "Installing GRUB (BIOS/i386-pc) via grub-mkimage with explicit prefix..."
 
-    # --- GRUB config ---
-    local root_uuid
-    root_uuid=$(blkid -s UUID -o value "$ROOT_PART")
+    local grub_mod_dir="/usr/lib/grub/i386-pc"
+    [[ -d "$grub_mod_dir" ]] || die "GRUB i386-pc modules not found at $grub_mod_dir — install grub-pc-bin"
 
-    # Detect actual kernel version instead of using wildcards
-    local kver
-    kver=$(chroot "$MOUNT_ROOT" ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
+    # Install modules to the boot partition
+    mkdir -p "$MOUNT_ROOT/boot/grub/i386-pc"
+    cp "$grub_mod_dir"/*.mod "$MOUNT_ROOT/boot/grub/i386-pc/" 2>/dev/null || true
 
-    cat > "$MOUNT_ROOT/boot/grub/grub.cfg" << EOF
-# Tonix GRUB Configuration — Codename: Mirage
+    # Build core.img with (,gpt2)/grub as the prefix.
+    # Modules baked in: enough to read FAT32 and load grub.cfg.
+    local core_img
+    core_img=$(mktemp /tmp/grub-core.img.XXXXXX)
+
+    grub-mkimage \
+        --directory="$grub_mod_dir" \
+        --prefix="(,gpt2)/grub" \
+        --output="$core_img" \
+        --format=i386-pc \
+        --compression=auto \
+        part_gpt part_msdos fat ext2 normal linux \
+        search search_label search_fs_uuid search_fs_file \
+        configfile echo gzio all_video
+
+    # Write MBR boot code + embed core.img after it.
+    # boot.img goes in the MBR (first 446 bytes), core.img goes in the
+    # BIOS boot partition (partition 1, set bios_grub on, 1MiB gap).
+    dd if="$grub_mod_dir/boot.img" of="$TARGET" bs=446 count=1 conv=notrunc 2>/dev/null
+    dd if="$core_img" of="$TARGET" bs=512 seek=4 conv=notrunc 2>/dev/null
+
+    # Also write core.img into the BIOS boot GPT partition (partition 1)
+    # Some firmwares read from there instead of the post-MBR gap.
+    dd if="$core_img" of="$BIOS_PART" bs=512 conv=notrunc 2>/dev/null || true
+
+    rm -f "$core_img"
+    ok "BIOS GRUB installed (grub-mkimage, prefix=(,gpt2)/grub)"
+
+    # --- UEFI — build our own EFI binaries with grub-mkstandalone ---
+    #
+    # We do NOT use 'grub-install --target=x86_64-efi'.
+    # Why: grub-install embeds Debian's default search config which looks for
+    # /.disk/info (a Debian live convention). When that file doesn't exist,
+    # $root stays empty, GRUB can't find grub.cfg, and drops to rescue shell.
+    #
+    # We use grub-mkstandalone from the HOST (not the chroot) with a fully
+    # embedded menu config. This eliminates all runtime config-file searching:
+    # the menu is baked directly into the EFI binary, same as the installer ISO.
+    #
+    info "Building custom GRUB EFI binaries (host grub-mkstandalone)..."
+
+    local root_uuid_for_embed
+    root_uuid_for_embed=$(blkid -s UUID -o value "$ROOT_PART")
+
+    local kver_for_embed
+    kver_for_embed=$(ls "$MOUNT_ROOT/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 | sed "s|$MOUNT_ROOT/boot/vmlinuz-||")
+    [[ -n "$kver_for_embed" ]] || die "Could not detect kernel version in installed OS"
+    info "Detected kernel for EFI embed: $kver_for_embed"
+
+    # The embedded config IS the full boot menu — no second-stage configfile.
+    # search --label is reliable here: the ESP label (TONIX) is set by mkfs.vfat
+    # and FAT labels are read natively by GRUB's fat module without needing
+    # a filesystem scan. We also keep the marker file search as primary.
+    local grub_embedded
+    grub_embedded=$(mktemp /tmp/grub-embedded.cfg.XXXXXX)
+    cat > "$grub_embedded" << GRUB_EMBED
+# Tonix — Embedded GRUB Menu (baked into EFI binary)
+# No external grub.cfg needed — this IS the menu.
+
+# Find the boot partition (FAT32 ESP, label TONIX)
+search --no-floppy --file --set=root /.tonix-boot
+if [ -z "\$root" ]; then
+    search --no-floppy --label --set=root TONIX
+fi
+
 set timeout=5
 set default=0
-
-# Theme
 set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Immutable (default)" {
-    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes apparmor=1 security=apparmor
-    initrd /initrd.img-$kver
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=yes apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Persistent Root (writable)" {
-    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=no apparmor=1 security=apparmor
-    initrd /initrd.img-$kver
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=no apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — RAM Only (entire OS in RAM)" {
-    linux /vmlinuz-$kver root=UUID=$root_uuid ro quiet noresume tonix.overlay=yes toram apparmor=1 security=apparmor
-    initrd /initrd.img-$kver
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=yes toram apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
 }
 
 menuentry "${OS_PRETTY_NAME:-Tonix} — Recovery" {
-    linux /vmlinuz-$kver root=UUID=$root_uuid ro single noresume tonix.overlay=no
-    initrd /initrd.img-$kver
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro single noresume tonix.overlay=no
+    initrd /initrd.img-${kver_for_embed}
+}
+GRUB_EMBED
+
+    local grub_modules="part_gpt part_msdos fat ext2 normal linux gzio all_video"
+    grub_modules+=" search search_label search_fs_uuid search_fs_file"
+    grub_modules+=" configfile echo test ls cat loopback"
+
+    mkdir -p "$MOUNT_ROOT/boot/EFI/BOOT"
+
+    # 64-bit EFI — run on HOST so we use host's grub module path
+    grub-mkstandalone \
+        --format=x86_64-efi \
+        --output="$MOUNT_ROOT/boot/EFI/BOOT/BOOTX64.EFI" \
+        --modules="$grub_modules" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$grub_embedded" \
+        2>/dev/null || warn "x86_64-efi standalone build had warnings"
+
+    # 32-bit EFI (older systems)
+    grub-mkstandalone \
+        --format=i386-efi \
+        --output="$MOUNT_ROOT/boot/EFI/BOOT/BOOTIA32.EFI" \
+        --modules="$grub_modules" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$grub_embedded" \
+        2>/dev/null || warn "i386-efi standalone not available (non-fatal)"
+
+    rm -f "$grub_embedded"
+
+    ok "GRUB EFI binaries built (host grub-mkstandalone, full embedded menu)"
+
+    # --- Write grub.cfg to boot partition ---
+    #
+    # This grub.cfg is used by BIOS boot (grub-install writes modules to
+    # /boot/grub/i386-pc/ and loads /boot/grub/grub.cfg at runtime).
+    # UEFI boot uses the fully embedded menu in the EFI binary above, but
+    # also falls back to this file if configfile is called manually.
+    #
+    # CRITICAL PATH RULE: /boot is a SEPARATE FAT32 partition (partition 2).
+    # GRUB's $root is set to the boot partition, so kernel paths have NO
+    # /boot/ prefix — files are at /vmlinuz-X, not /boot/vmlinuz-X.
+    #
+    info "Writing GRUB configuration..."
+    cat > "$MOUNT_ROOT/boot/grub/grub.cfg" << EOF
+# Tonix GRUB Configuration — Codename: Mirage
+# Paths are relative to the boot partition (no /boot/ prefix).
+
+set timeout=5
+set default=0
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
+
+menuentry "${OS_PRETTY_NAME:-Tonix} — Immutable (default)" {
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=yes apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
+}
+
+menuentry "${OS_PRETTY_NAME:-Tonix} — Persistent Root (writable)" {
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=no apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
+}
+
+menuentry "${OS_PRETTY_NAME:-Tonix} — RAM Only (entire OS in RAM)" {
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro quiet noresume tonix.overlay=yes toram apparmor=1 security=apparmor
+    initrd /initrd.img-${kver_for_embed}
+}
+
+menuentry "${OS_PRETTY_NAME:-Tonix} — Recovery" {
+    linux /vmlinuz-${kver_for_embed} root=UUID=${root_uuid_for_embed} ro single noresume tonix.overlay=no
+    initrd /initrd.img-${kver_for_embed}
 }
 EOF
+    ok "grub.cfg written to boot partition"
+
+    # Force flush to FAT32 — without this, umount can lose buffered writes
+    sync
+
+    # --- Install 10_tonix grub.d script ---
+    # This handles future kernel updates on the RUNNING system (where
+    # update-grub works properly, unlike in the installer chroot).
+    cat > "$MOUNT_ROOT/etc/grub.d/10_tonix" << 'GRUB_SCRIPT'
+#!/bin/bash
+# Tonix custom GRUB menu entry generator.
+# Runs via grub-mkconfig / update-grub on the live system.
+#
+# Uses make_system_path_relative_to_its_root() to correctly handle
+# /boot as a separate partition:
+#   separate /boot → /vmlinuz-X       (strips /boot prefix)
+#   /boot on root  → /boot/vmlinuz-X  (keeps /boot prefix)
+set -e
+
+if [ -f /usr/lib/grub/grub-mkconfig_lib ]; then
+    . /usr/lib/grub/grub-mkconfig_lib
+else
+    make_system_path_relative_to_its_root() { echo "$1"; }
+fi
+
+KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
+[ -z "$KVER" ] && exit 0
+
+LINUX=$(make_system_path_relative_to_its_root "/boot/vmlinuz-$KVER")
+INITRD=$(make_system_path_relative_to_its_root "/boot/initrd.img-$KVER")
+ROOT_UUID=$(grub-probe --target=fs_uuid / 2>/dev/null) || ROOT_UUID="DETECT_FAILED"
+
+[ -f /etc/default/grub ] && . /etc/default/grub
+QUIET="${GRUB_CMDLINE_LINUX_DEFAULT:-quiet noresume apparmor=1 security=apparmor}"
+DISTRO="${GRUB_DISTRIBUTOR:-Tonix}"
+
+cat << EOF
+set timeout=${GRUB_TIMEOUT:-5}
+set default=0
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
+
+menuentry "${DISTRO} — Immutable (default)" {
+    linux ${LINUX} root=UUID=${ROOT_UUID} ro ${QUIET} tonix.overlay=yes
+    initrd ${INITRD}
+}
+
+menuentry "${DISTRO} — Persistent Root (writable)" {
+    linux ${LINUX} root=UUID=${ROOT_UUID} ro ${QUIET} tonix.overlay=no
+    initrd ${INITRD}
+}
+
+menuentry "${DISTRO} — RAM Only (entire OS in RAM)" {
+    linux ${LINUX} root=UUID=${ROOT_UUID} ro ${QUIET} tonix.overlay=yes toram
+    initrd ${INITRD}
+}
+
+menuentry "${DISTRO} — Recovery" {
+    linux ${LINUX} root=UUID=${ROOT_UUID} ro single noresume tonix.overlay=no
+    initrd ${INITRD}
+}
+EOF
+GRUB_SCRIPT
+    chmod +x "$MOUNT_ROOT/etc/grub.d/10_tonix"
+
+    # Disable default Debian generators (our 10_tonix replaces them)
+    chmod -x "$MOUNT_ROOT/etc/grub.d/10_linux"  2>/dev/null || true
+    chmod -x "$MOUNT_ROOT/etc/grub.d/20_linux_xen" 2>/dev/null || true
+    chmod -x "$MOUNT_ROOT/etc/grub.d/30_os-prober" 2>/dev/null || true
 
     # Unmount bind mounts
+    umount "$MOUNT_ROOT/sys/firmware/efi/efivars" 2>/dev/null || true
     umount "$MOUNT_ROOT/dev"  2>/dev/null || true
     umount "$MOUNT_ROOT/proc" 2>/dev/null || true
     umount "$MOUNT_ROOT/sys"  2>/dev/null || true
@@ -389,13 +623,14 @@ cleanup() {
 
     # Only unmount if MOUNT_ROOT exists
     if [[ -d "${MOUNT_ROOT:-}" ]]; then
-        umount "$MOUNT_ROOT/home"  2>/dev/null || true
-        cryptsetup close secure_home 2>/dev/null || true
-        umount "$MOUNT_ROOT/boot"  2>/dev/null || true
-        umount "$MOUNT_ROOT/dev"   2>/dev/null || true
-        umount "$MOUNT_ROOT/proc"  2>/dev/null || true
-        umount "$MOUNT_ROOT/sys"   2>/dev/null || true
-        umount "$MOUNT_ROOT"       2>/dev/null || true
+        umount "$MOUNT_ROOT/home"                       2>/dev/null || true
+        cryptsetup close secure_home                     2>/dev/null || true
+        umount "$MOUNT_ROOT/boot"                        2>/dev/null || true
+        umount "$MOUNT_ROOT/sys/firmware/efi/efivars"    2>/dev/null || true
+        umount "$MOUNT_ROOT/dev"                         2>/dev/null || true
+        umount "$MOUNT_ROOT/proc"                        2>/dev/null || true
+        umount "$MOUNT_ROOT/sys"                         2>/dev/null || true
+        umount "$MOUNT_ROOT"                             2>/dev/null || true
         rmdir "$MOUNT_ROOT" 2>/dev/null || true
     fi
 

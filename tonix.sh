@@ -6,6 +6,7 @@
 #   ./tonix.sh build          Build the OS tarball
 #   ./tonix.sh install /dev/sdX   Install directly to USB drive
 #   ./tonix.sh iso            Build bootable installer ISO
+#   ./tonix.sh vm-test [mode] Test in QEMU VM (iso/iso-with-disk/disk/disk-bios)
 #   ./tonix.sh clean          Remove all build artifacts
 #
 # All modes share the same config (config.sh) and install logic
@@ -167,7 +168,9 @@ CHROOT_PACKAGES
 
         chroot "$CHROOT_DIR" /bin/bash << CHROOT_PIP
 set -e
-pip install --break-system-packages $python_packages
+# --upgrade-strategy only-if-needed prevents pip from upgrading already-installed
+# system packages (e.g. numpy) to versions that break other apt packages (e.g. scipy)
+pip install --break-system-packages --upgrade-strategy only-if-needed $python_packages
 CHROOT_PIP
 
         ok "Python packages installed"
@@ -443,8 +446,24 @@ VERSION_ID="${OS_VERSION}"
 LOGO=tonix-logo
 EOF_OS
 
-# --- Root password (user should change on first boot) ---
-echo "root:tonix" | chpasswd
+# --- Create regular user 'tonix' with sudo access ---
+useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev tonix
+echo "tonix:tonix" | chpasswd
+
+# Add to wireshark group only if it exists (created by wireshark package)
+if getent group wireshark &>/dev/null; then
+    usermod -aG wireshark tonix
+fi
+
+# --- Lock root account (no direct root login) ---
+passwd -l root
+
+# --- Disable root login via SSH ---
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-tonix.conf << 'EOF_SSH'
+PermitRootLogin no
+PasswordAuthentication yes
+EOF_SSH
 
 # --- Encryption in initramfs ---
 echo "CRYPTSETUP=y" > /etc/cryptsetup-initramfs/conf-hook
@@ -453,10 +472,19 @@ echo "CRYPTSETUP=y" > /etc/cryptsetup-initramfs/conf-hook
 cat > /etc/default/grub << 'EOF_GRUB'
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=5
+GRUB_DISTRIBUTOR="Tonix"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet noresume apparmor=1 security=apparmor"
 GRUB_CMDLINE_LINUX=""
 GRUB_DISABLE_OS_PROBER=true
 EOF_GRUB
+
+# --- Disable default GRUB entry generators ---
+# Our custom 10_tonix (installed during install phase) replaces these.
+# Disable them now so any build-time update-grub calls don't generate
+# configs with wrong /boot/ paths.
+chmod -x /etc/grub.d/10_linux 2>/dev/null || true
+chmod -x /etc/grub.d/20_linux_xen 2>/dev/null || true
+chmod -x /etc/grub.d/30_os-prober 2>/dev/null || true
 
 # --- Firewall (UFW) ---
 ufw default deny incoming
@@ -514,6 +542,7 @@ cat > /etc/motd << 'EOF_MOTD'
   WiFi status:      nmcli device status
   Stego tool:       stego --help
   Change password:  passwd
+  Switch to root:   sudo -i  (password: tonix)
 
 EOF_MOTD
 
@@ -522,15 +551,11 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-tonix.conf << 'EOF_LDM'
 [Seat:*]
 # Uncomment below for auto-login (less secure):
-# autologin-user=root
+# autologin-user=tonix
 # autologin-user-timeout=0
 greeter-hide-users=false
 greeter-show-manual-login=true
 EOF_LDM
-
-# --- Create first regular user (optional) ---
-# useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev user
-# echo "user:changeme" | chpasswd
 
 # --- Update initramfs ---
 update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
@@ -592,7 +617,7 @@ do_build_iso() {
     mount --bind /dev  "$INSTALLER_DIR/dev"
     mount --bind /proc "$INSTALLER_DIR/proc"
     mount --bind /sys  "$INSTALLER_DIR/sys"
-    
+
     # Mount cache for installer packages too
     mkdir -p "$CACHE_DIR/apt-archives"
     mkdir -p "$INSTALLER_DIR/var/cache/apt/archives"
@@ -607,6 +632,11 @@ export DEBIAN_FRONTEND=noninteractive
 apt update
 apt install -y $installer_packages
 
+# Explicitly regenerate initrd so live-boot hooks are included.
+# live-boot's postinst may not fire correctly inside a chroot, so we
+# force it here after all packages are settled.
+update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
+
 # NOTE: Do NOT run 'apt clean' here — the archives dir is bind-mounted
 # from the host cache/ folder. Cleaning would destroy the package cache.
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -614,6 +644,7 @@ rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 CHROOT_INSTALLER
 
     # Set root password for installer environment
+    # (root is only used in the live installer to run install-tonix)
     chroot "$INSTALLER_DIR" /bin/bash << 'CHROOT_PASS'
 echo "root:tonix" | chpasswd
 CHROOT_PASS
@@ -647,7 +678,7 @@ echo "Available block devices:"
 echo ""
 lsblk -d -o NAME,SIZE,TYPE,TRAN | grep -E "disk|usb"
 echo ""
-read -rp "Enter target device (e.g., sdb): " dev
+read -rp "Enter target device (e.g., sda or vda): " dev
 TARGET="/dev/${dev}"
 
 export TARBALL_PATH TARGET OS_PRETTY_NAME OS_HOSTNAME BOOT_SIZE_MIB ROOT_SIZE_MIB
@@ -658,12 +689,15 @@ INST_SCRIPT
 
     chmod +x "$INSTALLER_DIR/usr/local/bin/install-tonix"
 
-    # Auto-launch installer on boot
+    # Auto-launch installer on boot — shown for root on tty1
     cat > "$INSTALLER_DIR/root/.bash_profile" << 'BASH_PROF'
 if [[ "$(tty)" == "/dev/tty1" ]]; then
     echo ""
     echo "Welcome to the Tonix Installer."
-    echo "Type 'install-tonix' to begin, or use this shell."
+    echo ""
+    echo "  Run:  install-tonix"
+    echo ""
+    echo "  Note: In QEMU with virtio, the disk is 'vda' (not 'sda')."
     echo ""
 fi
 BASH_PROF
@@ -681,9 +715,18 @@ BASH_PROF
 
     # Copy kernel and initrd from installer
     local kver
-    kver=$(ls "$INSTALLER_DIR/lib/modules/" | head -1)
-    cp "$INSTALLER_DIR/boot/vmlinuz-$kver"  "$ISO_DIR/live/vmlinuz"
+    kver=$(ls "$INSTALLER_DIR/lib/modules/" 2>/dev/null | sort -V | tail -1)
+    [[ -n "$kver" ]] || die "Could not detect kernel version in installer environment"
+    info "Detected installer kernel: $kver"
+
+    [[ -f "$INSTALLER_DIR/boot/vmlinuz-$kver" ]] || \
+        die "Kernel not found: $INSTALLER_DIR/boot/vmlinuz-$kver"
+    [[ -f "$INSTALLER_DIR/boot/initrd.img-$kver" ]] || \
+        die "Initrd not found: $INSTALLER_DIR/boot/initrd.img-$kver"
+
+    cp "$INSTALLER_DIR/boot/vmlinuz-$kver"    "$ISO_DIR/live/vmlinuz"
     cp "$INSTALLER_DIR/boot/initrd.img-$kver" "$ISO_DIR/live/initrd.img"
+    ok "Kernel and initrd copied to ISO (vmlinuz-$kver)"
 
     # --- Set up ISOLINUX (BIOS boot) ---
     info "Setting up ISOLINUX for BIOS boot..."
@@ -703,21 +746,100 @@ UI menu.c32
 LABEL tonix
     MENU LABEL Tonix Installer
     KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img boot=live toram
+    APPEND initrd=/live/initrd.img boot=live username=root
+
+LABEL tonix-toram
+    MENU LABEL Tonix Installer (toram - copy to RAM)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live toram username=root
 ISOLINUX_CFG
 
     # --- Set up GRUB EFI boot ---
     info "Setting up GRUB for UEFI boot..."
     mkdir -p "$ISO_DIR/boot/grub"
+
+    # Marker file for search --file (reliable on all filesystem types)
+    touch "$ISO_DIR/.tonix-iso"
+
+    # The on-disk grub.cfg — used only if someone manually runs configfile
+    # from the GRUB shell. The real menu is embedded in the EFI binary below.
     cat > "$ISO_DIR/boot/grub/grub.cfg" << 'GRUB_ISO'
+search --no-floppy --file --set=root /.tonix-iso
 set timeout=5
 set default=0
 
 menuentry "Tonix Installer" {
-    linux /live/vmlinuz boot=live toram
-    initrd /live/initrd.img
+    linux ($root)/live/vmlinuz boot=live quiet username=root
+    initrd ($root)/live/initrd.img
+}
+
+menuentry "Tonix Installer (toram - copy to RAM)" {
+    linux ($root)/live/vmlinuz boot=live toram quiet username=root
+    initrd ($root)/live/initrd.img
 }
 GRUB_ISO
+
+    # The embedded GRUB config — baked directly into the EFI binary.
+    #
+    # CRITICAL DESIGN: We embed the FULL menu here, NOT a two-stage
+    # search+configfile handoff. Why:
+    #
+    #   - xorriso's -isohybrid-gpt-basdat makes the ISO appear as a GPT disk
+    #     to UEFI firmware. GRUB then sees GPT partitions, NOT the ISO9660
+    #     volume — so 'search --label TONIX_INST' finds nothing.
+    #
+    #   - 'search --file' works regardless: it scans all accessible
+    #     filesystems for a known file, which works through GPT, ISO9660,
+    #     and raw block device access alike.
+    #
+    #   - Embedding the full menu eliminates the configfile failure path
+    #     entirely — even if $root is wrong, GRUB still shows the menu.
+    #
+    local grub_embedded
+    grub_embedded=$(mktemp /tmp/grub-embedded.cfg.XXXXXX)
+    cat > "$grub_embedded" << 'GRUB_EMBEDDED'
+# Tonix Installer — Embedded GRUB Menu
+# Finds the ISO filesystem via marker file, then boots directly.
+
+# Strategy 1: search by marker file (most reliable across GPT/ISO9660/hybrid)
+search --no-floppy --file --set=root /.tonix-iso
+
+# Strategy 2: search by volume label (works on raw ISO9660 / BIOS boots)
+if [ -z "$root" ]; then
+    search --no-floppy --label --set=root TONIX_INST
+fi
+
+# Strategy 3: search for the kernel directly
+if [ -z "$root" ]; then
+    search --no-floppy --file --set=root /live/vmlinuz
+fi
+
+if [ -z "$root" ]; then
+    echo "ERROR: Could not locate Tonix installer filesystem."
+    echo ""
+    echo "Manual recovery:"
+    echo "  ls                                    # list devices"
+    echo "  ls (hd0,gpt2)/                        # browse a partition"
+    echo "  set root=(hd0,gpt2)                   # set root manually"
+    echo "  linux /live/vmlinuz boot=live          # load kernel"
+    echo "  initrd /live/initrd.img                # load initrd"
+    echo "  boot                                   # boot"
+    echo ""
+fi
+
+set timeout=5
+set default=0
+
+menuentry "Tonix Installer" {
+    linux ($root)/live/vmlinuz boot=live quiet username=root
+    initrd ($root)/live/initrd.img
+}
+
+menuentry "Tonix Installer (toram - copy to RAM)" {
+    linux ($root)/live/vmlinuz boot=live toram quiet username=root
+    initrd ($root)/live/initrd.img
+}
+GRUB_EMBEDDED
 
     # Create EFI boot image
     mkdir -p "$ISO_DIR/EFI/boot"
@@ -730,32 +852,49 @@ GRUB_ISO
     mount -o loop "$efi_img" "$efi_mount"
     mkdir -p "$efi_mount/EFI/boot"
 
-    # Build GRUB EFI binary
+    # Build GRUB EFI binary — embed the FULL menu + search logic.
+    # --modules is critical: since grub-mkstandalone produces a self-contained
+    # binary with NO access to a module directory, EVERY needed module must be
+    # baked in here. Key requirements:
+    #   normal          — menu system + if/else/configfile (without this → rescue shell)
+    #   linux           — linux/initrd commands (without this → "can't find command")
+    #   gzio            — decompress gzip'd kernels (without this → "file not recognized")
+    #   search*         — find ISO filesystem by file/label/UUID
+    #   iso9660/fat     — read ISO and EFI filesystems
+    #   search_fs_file  — needed for 'search --file' (primary strategy)
+    local grub_modules="part_gpt part_msdos fat iso9660 normal linux gzio all_video"
+    grub_modules+=" search search_label search_fs_uuid search_fs_file configfile echo test ls cat loopback"
+
     grub-mkstandalone \
         --format=x86_64-efi \
         --output="$efi_mount/EFI/boot/bootx64.efi" \
+        --modules="$grub_modules" \
         --locales="" \
         --fonts="" \
-        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
+        "boot/grub/grub.cfg=$grub_embedded"
 
     # Also build 32-bit EFI for older systems
     grub-mkstandalone \
         --format=i386-efi \
         --output="$efi_mount/EFI/boot/bootia32.efi" \
+        --modules="$grub_modules" \
         --locales="" \
         --fonts="" \
-        "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg" 2>/dev/null || \
+        "boot/grub/grub.cfg=$grub_embedded" 2>/dev/null || \
         warn "i386-efi standalone not available (non-fatal)"
 
+    rm -f "$grub_embedded"
     umount "$efi_mount"
     rmdir "$efi_mount"
 
-    # Build ISO with xorriso
+    # Build ISO with xorriso — -V TONIX_INST is the volume label the embedded
+    # GRUB config searches for with 'search --label TONIX_INST'
     info "Creating ISO image..."
     local iso_output="$OUTPUT_DIR/tonix-installer-${OS_VERSION}.iso"
 
     xorriso -as mkisofs \
         -o "$iso_output" \
+        -V "TONIX_INST" \
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
         -c isolinux/boot.cat \
         -b isolinux/isolinux.bin \
@@ -798,6 +937,117 @@ GRUB_ISO
 }
 
 # ============================================================================
+# VM TEST: Boot ISO or installed disk in QEMU for quick testing
+# ============================================================================
+do_vm_test() {
+    local mode="${1:-iso}"  # iso | iso-with-disk | disk | disk-bios
+    local disk_file="$PROJECT_DIR/tonix-test.qcow2"
+    local iso_file
+    iso_file=$(ls "$OUTPUT_DIR"/tonix-installer-*.iso 2>/dev/null | tail -1 || true)
+
+    # Check QEMU is available
+    command -v qemu-system-x86_64 &>/dev/null || {
+        warn "qemu-system-x86_64 not found. Install with:"
+        echo "  sudo apt install qemu-system-x86 qemu-kvm ovmf"
+        exit 1
+    }
+
+    # KVM acceleration flag
+    local kvm_flag=""
+    [[ -r /dev/kvm ]] && kvm_flag="-enable-kvm" || warn "KVM not available — VM will be slow without it"
+
+    # OVMF (UEFI firmware) — check common paths across distros
+    local ovmf_path=""
+    for p in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/ovmf/x64/OVMF.fd; do
+        [[ -f "$p" ]] && { ovmf_path="$p"; break; }
+    done
+
+    case "$mode" in
+        iso|iso-with-disk)
+            [[ -f "$iso_file" ]] || die "No installer ISO found in $OUTPUT_DIR — run: $0 iso"
+            info "Booting installer ISO in QEMU (UEFI mode)..."
+            info "ISO: $iso_file"
+            echo ""
+
+            local disk_args=""
+            if [[ "$mode" == "iso-with-disk" ]] || [[ ! -f "$disk_file" ]]; then
+                [[ -f "$disk_file" ]] || {
+                    info "Creating 30GB virtual test disk: $disk_file"
+                    qemu-img create -f qcow2 "$disk_file" 30G
+                }
+                disk_args="-drive file=$disk_file,format=qcow2,if=virtio"
+                info "Virtual disk attached: $disk_file"
+                info "Inside the VM, run 'install-tonix' and enter 'vda' as the target device."
+            fi
+            echo ""
+
+            local bios_args=""
+            if [[ -n "$ovmf_path" ]]; then
+                bios_args="-bios $ovmf_path"
+            else
+                warn "OVMF not found — using SeaBIOS (legacy BIOS). For UEFI: sudo apt install ovmf"
+            fi
+
+            qemu-system-x86_64 \
+                $kvm_flag \
+                -m 2048 \
+                -cdrom "$iso_file" \
+                $disk_args \
+                $bios_args \
+                -boot d \
+                -vga virtio
+            ;;
+
+        disk|disk-uefi)
+            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file\nRun '$0 vm-test iso-with-disk' first to create and install Tonix."
+            info "Booting installed disk in QEMU (UEFI mode)..."
+
+            local bios_args=""
+            if [[ -n "$ovmf_path" ]]; then
+                bios_args="-bios $ovmf_path"
+            else
+                warn "OVMF not found — install with: sudo apt install ovmf"
+            fi
+
+            qemu-system-x86_64 \
+                $kvm_flag \
+                -m 2048 \
+                -drive file="$disk_file",format=qcow2,if=virtio \
+                $bios_args \
+                -boot c \
+                -vga virtio
+            ;;
+
+        disk-bios)
+            [[ -f "$disk_file" ]] || die "No virtual disk found: $disk_file"
+            info "Booting installed disk in QEMU (legacy BIOS mode)..."
+            info "This specifically tests the BIOS boot partition (partition 1)."
+
+            qemu-system-x86_64 \
+                $kvm_flag \
+                -m 2048 \
+                -drive file="$disk_file",format=qcow2,if=ide \
+                -boot c \
+                -vga std
+            ;;
+
+        *)
+            echo ""
+            echo "Usage: $0 vm-test [mode]"
+            echo ""
+            echo "Modes:"
+            echo "  iso             Boot installer ISO in UEFI VM (default)"
+            echo "  iso-with-disk   Boot ISO + attach virtual disk (for full install test)"
+            echo "  disk            Boot installed virtual disk — UEFI"
+            echo "  disk-bios       Boot installed virtual disk — legacy BIOS (tests BIOS boot partition)"
+            echo ""
+            echo "Virtual disk: $disk_file"
+            echo "Requires: qemu-system-x86 qemu-kvm  (optionally: ovmf for UEFI)"
+            ;;
+    esac
+}
+
+# ============================================================================
 # Helper: mount/unmount chroot binds
 # ============================================================================
 mount_chroot() {
@@ -817,30 +1067,40 @@ cleanup_chroot() {
 # Helper: package cache management
 # ============================================================================
 mount_cache() {
-    # Create cache directory if it doesn't exist
-    mkdir -p "$CACHE_DIR/apt-archives"
-    mkdir -p "$CHROOT_DIR/var/cache/apt/archives"
-    
+    # Create cache directory structure — apt needs the partial/ subdir to exist
+    # or it can't stage downloads and silently skips caching
+    mkdir -p "$CACHE_DIR/apt-archives/partial"
+    mkdir -p "$CHROOT_DIR/var/cache/apt/archives/partial"
+
     # Clear cache if refresh requested
     if [[ "$REFRESH_CACHE" == true ]]; then
         info "Refreshing package cache..."
         rm -rf "$CACHE_DIR/apt-archives"/*
+        mkdir -p "$CACHE_DIR/apt-archives/partial"
         ok "Cache cleared"
     fi
-    
+
     # Bind mount cache into chroot
     mount --bind "$CACHE_DIR/apt-archives" "$CHROOT_DIR/var/cache/apt/archives"
-    
+
+    # Tell apt to keep downloaded packages after install
+    mkdir -p "$CHROOT_DIR/etc/apt/apt.conf.d"
+    cat > "$CHROOT_DIR/etc/apt/apt.conf.d/99-tonix-cache" << 'EOF'
+APT::Keep-Downloaded-Packages "true";
+Binary::apt::APT::Keep-Downloaded-Packages "true";
+DPkg::Post-Invoke { "true"; };
+EOF
+
     # Show cache stats
-    local cache_size
+    local cache_size cache_count
     cache_size=$(du -sh "$CACHE_DIR/apt-archives" 2>/dev/null | cut -f1 || echo "0")
-    local cache_count
     cache_count=$(find "$CACHE_DIR/apt-archives" -name "*.deb" 2>/dev/null | wc -l || echo "0")
-    
+
     if [[ "$cache_count" -gt 0 ]]; then
-        info "Using package cache: $cache_count packages ($cache_size) — skipping downloads"
+        info "Using package cache: $cache_count packages ($cache_size)"
+        info "Cached packages will be used as-is; newer versions will be downloaded and cached"
     else
-        info "Package cache empty — packages will be downloaded and cached"
+        info "Package cache empty — packages will be downloaded and cached for next build"
     fi
 }
 
@@ -894,6 +1154,9 @@ case "${1:-help}" in
     iso)
         do_build_iso
         ;;
+    vm-test)
+        do_vm_test "${2:-iso}"
+        ;;
     clean)
         do_clean
         ;;
@@ -903,9 +1166,7 @@ case "${1:-help}" in
         echo "========================="
         echo "Location: $CACHE_DIR/apt-archives"
         if [[ -d "$CACHE_DIR/apt-archives" ]]; then
-            local cache_size
             cache_size=$(du -sh "$CACHE_DIR/apt-archives" | cut -f1)
-            local cache_count
             cache_count=$(find "$CACHE_DIR/apt-archives" -name "*.deb" | wc -l)
             echo "Size: $cache_size"
             echo "Packages: $cache_count"
@@ -925,6 +1186,7 @@ case "${1:-help}" in
         echo "  $0 [--refresh] build        Build the OS image (tarball)"
         echo "  $0 [--refresh] iso          Build bootable installer ISO"
         echo "  $0 install /dev/sdX         Install directly to a USB drive"
+        echo "  $0 vm-test [mode]           Test in QEMU VM (iso/iso-with-disk/disk/disk-bios)"
         echo "  $0 clean                    Remove build artifacts"
         echo "  $0 cache-info               Show package cache statistics"
         echo ""
@@ -937,9 +1199,11 @@ case "${1:-help}" in
         echo "  Use --refresh to force re-download all packages."
         echo ""
         echo "Typical workflow:"
-        echo "  1. $0 build                 # Create OS image (downloads packages)"
-        echo "  2. $0 build                 # Rebuild (uses cache, much faster!)"
-        echo "  3. $0 install /dev/sdb      # Write to USB (or: $0 iso)"
+        echo "  1. $0 build                     # Create OS image (downloads packages)"
+        echo "  2. $0 build                     # Rebuild (uses cache, much faster!)"
+        echo "  3. $0 install /dev/sdb          # Write to USB"
+        echo "  3b. $0 vm-test iso-with-disk    # Or test in QEMU first (recommended)"
         echo ""
         ;;
 esac
+exit 0

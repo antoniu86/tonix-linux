@@ -5,6 +5,7 @@ __pycache__/
 # Build artifacts
 build/
 output/
+cache/
 
 # macOS
 .DS_Store

@@ -47,8 +47,12 @@ PACKAGES_CORE=(
 )
 
 # --- Bootloader ---
+# NOTE: grub-pc is intentionally excluded — its postinst triggers a debconf
+# dialog asking which disk to install GRUB to, which can hang noninteractive
+# builds. grub-pc-bin provides the i386-pc modules we need, and grub-common
+# (auto-pulled as a dependency) provides grub-install and grub-mkconfig.
 PACKAGES_BOOTLOADER=(
-    grub-pc
+    grub-common
     grub-pc-bin
     grub-efi-amd64-bin
     grub-efi-ia32-bin
@@ -296,6 +300,13 @@ PACKAGES_WIFI_SECURITY=(
 
     # ARP/MITM testing
     dsniff
+
+    # Runtime libraries for tools built from source (mdk4)
+    # The -dev packages are build-time only and get removed after build;
+    # these are the actual shared libraries mdk4 needs to run
+    libnl-3-200
+    libnl-genl-3-200
+    libpcap0.8
 )
 
 # --- WiFi Security — Built from Source (not in Debian repos) ---
@@ -306,10 +317,12 @@ WIFI_SECURITY_FROM_SOURCE=(
     "mdk4|https://github.com/aircrack-ng/mdk4.git|make && make install"
 )
 
-# Bettercap requires Go — added to build-time deps (not installed in final OS)
+# Bettercap requires Go, mdk4 requires libpcap-dev and libnl-3-dev — build-time only (not in final OS)
 BUILD_ONLY_DEPS=(
     golang-go
     libnl-3-dev
+    libnl-genl-3-dev
+    libpcap-dev
 )
 
 # --- Wordlists (downloaded during build, stored in /opt/wordlists) ---
@@ -343,7 +356,7 @@ PYTHON_PACKAGES=(
     beautifulsoup4
 
     # Crypto
-    cryptography
+    # cryptography
 )
 
 # --- Nice to have ---
@@ -387,11 +400,13 @@ get_all_packages() {
 PACKAGES_INSTALLER=(
     linux-image-amd64
     live-boot
+    live-config
     systemd-sysv
     parted
     cryptsetup
     dosfstools
     e2fsprogs
+    grub-common
     grub-pc-bin
     grub-efi-amd64-bin
     grub-efi-ia32-bin

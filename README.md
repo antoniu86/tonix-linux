@@ -35,6 +35,12 @@ sudo ./tonix.sh install /dev/sdX
 
 # 2b. OR build an installer ISO
 sudo ./tonix.sh iso
+
+# 2c. OR test in a VM first (faster than writing to USB every time)
+sudo ./tonix.sh vm-test iso-with-disk   # boot ISO + attach virtual disk
+# Inside the VM: run 'install-tonix', enter 'vda' as the target device
+sudo ./tonix.sh vm-test disk            # boot the installed VM disk (UEFI)
+sudo ./tonix.sh vm-test disk-bios       # boot the installed VM disk (legacy BIOS)
 ```
 
 ### Faster Rebuilds
@@ -59,7 +65,7 @@ sudo ./tonix.sh --refresh build    # Force fresh packages (45-60 min)
 +------+----------+----------------------------+--------------------------+
   p1      p2         p3                          p4
 
-Partition 1: BIOS boot (for legacy GRUB on GPT disks)
+Partition 1: BIOS boot (for legacy GRUB on GPT disks, no filesystem)
 Partition 2: ESP/Boot (UEFI + kernel/initrd)
 Partition 3: Root filesystem (immutable by default)
 Partition 4: Encrypted home (persistent across OS rebuilds)
@@ -84,10 +90,10 @@ Force all network traffic through Tor:
 ```bash
 sudo tonix-tormode on       # Enable — all traffic through Tor
 sudo tonix-tormode off      # Disable — normal networking
-tonix-tormode status        # Check current mode
+tonix-tormode status        # Check current mode and exit IP
 ```
 
-When active: all outbound TCP is redirected through Tor's transparent proxy, DNS goes through Tor, direct connections are blocked by iptables, IPv6 is disabled entirely.
+When active: all outbound TCP is transparently redirected through Tor, DNS goes through Tor (no leaks), all UDP except DHCP is blocked, IPv6 is fully blocked, direct connections are rejected.
 
 ## Boot Mode
 
@@ -111,7 +117,8 @@ stego scan /path/to/files -r -v             # Scan for hidden data
 # Edit config.sh to add/change packages, then:
 sudo ./tonix.sh build
 sudo ./tonix.sh install /dev/sdX
-# /home is preserved, only /boot and / are replaced
+# Partitions 2 (ESP) and 3 (root) are replaced.
+# Partitions 1 (BIOS boot) and 4 (encrypted /home) are untouched.
 ```
 
 Temporary installs work too: `apt install something` in immutable mode lives in RAM and disappears on reboot. Your /home data is untouched either way.
@@ -120,7 +127,7 @@ Temporary installs work too: `apt install something` in immutable mode lives in 
 
 ```
 tonix/
-├── tonix.sh                        Main entry point (build / install / iso)
+├── tonix.sh                        Main entry point (build / install / iso / vm-test)
 ├── config.sh                       All package lists and settings
 ├── install-common.sh               Shared install logic
 ├── overlays/
@@ -168,6 +175,8 @@ tonix/
 - Internet connection (~2-4GB download for first build)
 - Root access
 
+**For VM testing (`vm-test`):** `sudo apt install qemu-system-x86 qemu-kvm ovmf`
+
 **Note:** After the first build, the package cache speeds up subsequent builds by 3-4x. See `docs/PACKAGE_CACHE.md` for details.
 
 ## Package Cache & Build Performance
@@ -198,4 +207,9 @@ See `docs/PACKAGE_CACHE.md` for complete documentation.
 
 ## Default Credentials
 
-- Root password: `tonix` (change immediately with `passwd`)
+| Context | Username | Password |
+|---------|----------|----------|
+| Installed OS | `tonix` | `tonix` |
+| Installer ISO (live env) | `root` | `tonix` |
+
+Direct root login is disabled on the installed system — the root account is locked. Use `sudo -i` to get a root shell when needed. Change your password after first login with `passwd`.
