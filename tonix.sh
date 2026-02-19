@@ -300,17 +300,11 @@ if wget -q --timeout=300 "$TOR_URL" -O tor-browser.tar.xz 2>/dev/null; then
     tar -xJf tor-browser.tar.xz -C "$TOR_DIR" --strip-components=1
     rm -f tor-browser.tar.xz
 
-    # Create launcher script
-    cat > /usr/local/bin/tor-browser << 'TB_LAUNCHER'
-#!/bin/bash
-# Tonix Tor Browser Launcher
-# Runs Tor Browser from /opt/tor-browser
-cd /opt/tor-browser
-./start-tor-browser.desktop --detach "$@" 2>/dev/null || \
-./Browser/start-tor-browser --detach "$@" 2>/dev/null || \
-echo "Error: Could not start Tor Browser"
-TB_LAUNCHER
-    chmod +x /usr/local/bin/tor-browser
+    # Launcher is provided via overlays/usr/local/bin/tor-browser
+    # Create dedicated system user for Tor Browser at build time
+    useradd -r -s /usr/sbin/nologin -d /var/lib/tonix-browser -m tonix-browser 2>/dev/null || true
+    chown -R tonix-browser:tonix-browser "$TOR_DIR"
+    chmod -R 755 "$TOR_DIR"
 
     echo "Tor Browser ${TOR_VERSION} installed"
 else
@@ -535,14 +529,15 @@ cat > /etc/motd << 'EOF_MOTD'
   Firewall active (ufw)        AppArmor enabled
   No swap — RAM only           Root is immutable (overlayfs)
 
-  Start GUI:        startxfce4
-  Tor-only mode:    sudo tonix-tormode on
-  Tor Browser:      tor-browser
+  Start GUI:        startxfce4       (exit: logout from XFCE menu or pkill xfce4-session)
+  Stop GUI:         pkill xfce4-session
+  Tor-only mode:    sudo tonix-tormode on|off|status
+  Tor Browser:      tor-browser      (auto-routes via tormode if active)
   System status:    tonix-status
   WiFi status:      nmcli device status
   Stego tool:       stego --help
   Change password:  passwd
-  Switch to root:   sudo -i  (password: tonix)
+  Switch to root:   sudo -i          (password: tonix)
 
 EOF_MOTD
 

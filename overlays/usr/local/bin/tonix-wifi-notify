@@ -4,13 +4,24 @@ MSG="${1:-WiFi adapter detected}"
 
 logger -t "tonix-wifi" "$MSG"
 
-# Send desktop notification if X is running
-if [[ -n "${DISPLAY:-}" ]] || [[ -n "$(pgrep -x Xorg 2>/dev/null)" ]]; then
-    export DISPLAY=:0
-    export XAUTHORITY=/root/.Xauthority
+# Send desktop notification if X is running.
+# Dynamically find the user running the desktop session — do NOT hardcode
+# /root/.Xauthority since XFCE runs as the 'tonix' user, not root.
+if pgrep -x Xorg &>/dev/null || pgrep -x X &>/dev/null; then
+    # Find the user who owns the Xorg process (the real desktop user)
+    DESKTOP_USER=$(ps -eo user,comm | awk '$2=="Xorg" || $2=="X" {print $1; exit}')
 
-    # Try notify-send (works with XFCE notification daemon)
-    if command -v notify-send &>/dev/null; then
-        notify-send -i network-wireless "Tonix WiFi" "$MSG" 2>/dev/null || true
+    if [[ -n "$DESKTOP_USER" ]]; then
+        DESKTOP_HOME=$(getent passwd "$DESKTOP_USER" | cut -d: -f6)
+        export DISPLAY=:0
+        export XAUTHORITY="${DESKTOP_HOME}/.Xauthority"
+
+        if command -v notify-send &>/dev/null; then
+            # Run notify-send as the desktop user, not root
+            sudo -u "$DESKTOP_USER" \
+                DISPLAY=:0 \
+                XAUTHORITY="${XAUTHORITY}" \
+                notify-send -i network-wireless "Tonix WiFi" "$MSG" 2>/dev/null || true
+        fi
     fi
 fi

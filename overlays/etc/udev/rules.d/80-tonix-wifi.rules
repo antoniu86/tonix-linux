@@ -1,21 +1,23 @@
 # Tonix — Alfa WiFi USB Adapter Auto-Detection
-# These rules trigger when known Alfa adapters are plugged in
+# These rules trigger when known Alfa adapters are plugged in.
+#
+# NOTE: RUN+= in udev executes in a stripped environment with no D-Bus,
+# no display, and no user session — notify-send cannot work here.
+# Desktop notifications are handled inside tonix-wifi-hotplug instead,
+# which is called from the systemd service that has the right context.
 
 # AWUS036ACM — MediaTek MT7612U
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7612", \
-    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
-    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS036ACM (MT7612U) detected'"
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service"
 
 # AWUS036AXML — MediaTek MT7921AUN
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7961", \
-    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
-    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS036AXML (MT7921) detected'"
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service"
 
 # AWUS1900 — Realtek RTL8814AU
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="8813", \
-    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service", \
-    RUN+="/usr/local/bin/tonix-wifi-notify 'AWUS1900 (RTL8814AU) detected'"
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="tonix-wifi-setup@%k.service"
 
-# Generic: any new wireless interface
+# Generic: any new wireless interface — hotplug script handles MAC + notify
 ACTION=="add", SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", \
     RUN+="/usr/local/bin/tonix-wifi-hotplug '%k'"

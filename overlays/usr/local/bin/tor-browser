@@ -1,0 +1,46 @@
+#!/bin/bash
+# Tonix Tor Browser Launcher
+
+TOR_DIR="/opt/tor-browser"
+BROWSER_BIN="$TOR_DIR/Browser/start-tor-browser"
+
+# 1. Tor Browser refuses to run as root — re-launch as tonix-browser user
+if [[ $EUID -eq 0 ]]; then
+    if ! id tonix-browser &>/dev/null; then
+        useradd -r -s /usr/sbin/nologin -d /var/lib/tonix-browser -m tonix-browser 2>/dev/null || true
+    fi
+    # Extract xauth cookie to a temp file readable by tonix-browser
+    XAUTH_FILE=$(mktemp /tmp/.xauth-XXXXXX)
+    xauth extract "$XAUTH_FILE" "$DISPLAY" 2>/dev/null || true
+    chmod 644 "$XAUTH_FILE"
+    exec sudo -u tonix-browser \
+        DISPLAY="$DISPLAY" \
+        XAUTHORITY="$XAUTH_FILE" \
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
+        "$0" "$@"
+fi
+
+# 2. Allow unprivileged user namespaces (needed for browser internal sandbox)
+USERNS_SETTING="/proc/sys/kernel/unprivileged_userns_clone"
+if [[ -f "$USERNS_SETTING" ]] && [[ $(cat "$USERNS_SETTING") == "0" ]]; then
+    echo 1 | sudo tee "$USERNS_SETTING" > /dev/null 2>&1 || true
+fi
+
+# 3. Set AppArmor to complain mode for browser profiles if loaded
+if command -v aa-status &>/dev/null && aa-status --enabled 2>/dev/null; then
+    for profile in torbrowser firefox; do
+        if aa-status 2>/dev/null | grep -q "$profile"; then
+            sudo aa-complain "$profile" 2>/dev/null || true
+        fi
+    done
+fi
+
+# 4. Launch
+cd "$TOR_DIR"
+if [[ -x "$BROWSER_BIN" ]]; then
+    exec "$BROWSER_BIN" --detach "$@"
+else
+    echo "Error: Tor Browser not found at $TOR_DIR"
+    echo "Reinstall with: tonix-update-torbrowser"
+    exit 1
+fi

@@ -12,19 +12,16 @@ LOG_TAG="tonix-early-mac"
 
 logger -t "$LOG_TAG" "Starting early MAC randomization..."
 
-# Randomize all physical network interfaces
-for iface_path in /sys/class/net/*/device; do
-    [[ -e "$iface_path" ]] || continue
-
-    iface=$(basename "$(dirname "$iface_path")")
-
-    # Skip loopback
-    [[ "$iface" == "lo" ]] && continue
+# ============================================================================
+# Randomize a single interface — wrapped in a function so that
+# 'local' variables are valid (bash forbids 'local' outside functions)
+# ============================================================================
+randomize_iface() {
+    local iface="$1"
+    local mac_ok=false
 
     # Bring interface down
-    ip link set "$iface" down 2>/dev/null || continue
-
-    local mac_ok=false
+    ip link set "$iface" down 2>/dev/null || return 1
 
     if command -v macchanger &>/dev/null; then
         # Use macchanger for proper OUI-preserving randomization
@@ -38,18 +35,35 @@ for iface_path in /sys/class/net/*/device; do
 
     # Fallback: manual MAC randomization if macchanger failed or absent
     if [[ "$mac_ok" != true ]]; then
-        # Generate random MAC with locally-administered bit set
+        # Generate random MAC with locally-administered bit set (02:xx:xx:xx:xx:xx)
+        local local_mac
         local_mac=$(printf '02:%02x:%02x:%02x:%02x:%02x' \
             $((RANDOM % 256)) $((RANDOM % 256)) \
             $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)))
 
-        ip link set "$iface" address "$local_mac" 2>/dev/null && \
-            logger -t "$LOG_TAG" "MAC randomized (manual): $iface → $local_mac" || \
+        if ip link set "$iface" address "$local_mac" 2>/dev/null; then
+            logger -t "$LOG_TAG" "MAC randomized (manual): $iface → $local_mac"
+        else
             logger -t "$LOG_TAG" "Failed to randomize MAC for $iface"
+        fi
     fi
 
     # Bring interface back up
     ip link set "$iface" up 2>/dev/null || true
+}
+
+# ============================================================================
+# Randomize all physical network interfaces
+# ============================================================================
+for iface_path in /sys/class/net/*/device; do
+    [[ -e "$iface_path" ]] || continue
+
+    iface=$(basename "$(dirname "$iface_path")")
+
+    # Skip loopback
+    [[ "$iface" == "lo" ]] && continue
+
+    randomize_iface "$iface"
 done
 
 logger -t "$LOG_TAG" "Early MAC randomization complete"

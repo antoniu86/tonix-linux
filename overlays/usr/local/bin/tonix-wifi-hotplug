@@ -3,7 +3,11 @@
 # Tonix WiFi Hotplug Handler
 # ============================================================================
 # Called by udev when a new wireless interface appears.
-# Randomizes MAC address, then hands off to NetworkManager.
+# Randomizes MAC address, sends desktop notification, then hands off
+# to NetworkManager.
+#
+# Adapter-specific notifications are done here (not in udev RUN+=)
+# because udev has no D-Bus or display context.
 
 IFACE="${1:-}"
 LOG_TAG="tonix-wifi"
@@ -22,6 +26,7 @@ if [[ ! -d "/sys/class/net/$IFACE" ]]; then
 fi
 
 # Randomize MAC address for privacy
+# Use -r (fully random) for maximum anonymity — consistent with wifi-monitor
 if command -v macchanger &>/dev/null; then
     ip link set "$IFACE" down 2>/dev/null || true
     macchanger -r "$IFACE" 2>/dev/null && \
@@ -29,6 +34,20 @@ if command -v macchanger &>/dev/null; then
         logger -t "$LOG_TAG" "MAC randomization failed for $IFACE (non-fatal)"
     ip link set "$IFACE" up 2>/dev/null || true
 fi
+
+# Send desktop notification — detect adapter name from USB vendor/product
+# (udev can't do this reliably, so we do it here in systemd service context)
+NOTIFY_MSG="WiFi interface $IFACE activated"
+if [[ -f "/sys/class/net/$IFACE/device/idVendor" ]]; then
+    VENDOR=$(cat "/sys/class/net/$IFACE/device/idVendor" 2>/dev/null)
+    PRODUCT=$(cat "/sys/class/net/$IFACE/device/idProduct" 2>/dev/null)
+    case "${VENDOR}:${PRODUCT}" in
+        0e8d:7612) NOTIFY_MSG="AWUS036ACM (MT7612U) detected on $IFACE" ;;
+        0e8d:7961) NOTIFY_MSG="AWUS036AXML (MT7921) detected on $IFACE" ;;
+        0bda:8813) NOTIFY_MSG="AWUS1900 (RTL8814AU) detected on $IFACE" ;;
+    esac
+fi
+/usr/local/bin/tonix-wifi-notify "$NOTIFY_MSG" 2>/dev/null || true
 
 # Tell NetworkManager to pick it up
 if command -v nmcli &>/dev/null; then

@@ -95,23 +95,32 @@ restore_apparmor_for_tor() {
 }
 
 # ============================================================================
-# Wait for Tor to bootstrap (up to 60s)
+# Wait for Tor to bootstrap (up to 120s)
+# Returns 0 on success, 1 on timeout
 # ============================================================================
 wait_for_tor() {
     echo -e "${CYAN}Waiting for Tor to bootstrap...${NC}"
     local i=0
-    while (( i < 60 )); do
-        if journalctl -u tor -n 30 --no-pager 2>/dev/null | grep -q "Bootstrapped 100%"; then
+    while (( i < 120 )); do
+        # Check both journalctl and Tor's control port for bootstrap status
+        if journalctl -u tor -n 50 --no-pager 2>/dev/null | grep -q "Bootstrapped 100%"; then
             echo -e "${GREEN}Tor is ready.${NC}"
             return 0
+        fi
+        # Also check if tor process is running at all — fail fast if it died
+        if ! systemctl is-active --quiet tor; then
+            echo ""
+            echo -e "${RED}Tor service stopped unexpectedly. Check: journalctl -u tor -n 30${NC}"
+            return 1
         fi
         sleep 2
         (( i += 2 ))
         echo -n "."
     done
     echo ""
-    echo -e "${YELLOW}Warning: Tor bootstrap timed out — may still be connecting.${NC}"
-    echo -e "${YELLOW}Iptables rules are applied. Traffic will flow once Tor is ready.${NC}"
+    echo -e "${RED}Tor bootstrap timed out after 120s.${NC}"
+    echo -e "${YELLOW}Check Tor logs: journalctl -u tor -n 50${NC}"
+    return 1
 }
 
 # ============================================================================
@@ -193,6 +202,56 @@ apply_iptables() {
 }
 
 # ============================================================================
+# Configure Tor Browser profile to match tormode state
+# When tormode is ON:  disable Tor Browser's own Tor (transparent proxy handles it)
+# When tormode is OFF: re-enable Tor Browser's own Tor client
+# ============================================================================
+configure_torbrowser() {
+    local mode="$1"   # "direct" or "tor"
+    local TB_PROFILE_BASE="/var/lib/tonix-browser/.tor-browser"
+    local PROFILE_DIR
+
+    # Find the actual profile dir (named randomly under TorBrowser/Data/Browser/)
+    PROFILE_DIR=$(find "$TB_PROFILE_BASE"         -maxdepth 5 -name "prefs.js" 2>/dev/null         | head -1 | xargs dirname 2>/dev/null || true)
+
+    # If no existing profile, write to user.js in the default profile location
+    # Tor Browser will apply user.js on next launch even before prefs.js exists
+    if [[ -z "$PROFILE_DIR" ]]; then
+        PROFILE_DIR="$TB_PROFILE_BASE/tbb/TorBrowser/Data/Browser/profile.default"
+        mkdir -p "$PROFILE_DIR"
+        chown -R tonix-browser:tonix-browser "$TB_PROFILE_BASE" 2>/dev/null || true
+    fi
+
+    local USER_JS="$PROFILE_DIR/user.js"
+
+    if [[ "$mode" == "direct" ]]; then
+        # tormode ON — transparent proxy handles routing, Tor Browser goes direct
+        cat > "$USER_JS" << 'TBUSERJS'
+// Tonix: tormode is ON — transparent proxy routes all traffic through Tor.
+// Tor Browser's own Tor client is disabled to avoid Tor-over-Tor.
+user_pref("network.proxy.type", 0);
+user_pref("extensions.torbutton.use_nontor_proxy", true);
+user_pref("extensions.torlauncher.start_tor", false);
+user_pref("extensions.torlauncher.prompt_at_startup", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+TBUSERJS
+        chown tonix-browser:tonix-browser "$USER_JS" 2>/dev/null || true
+        echo -e "${CYAN}Tor Browser configured: direct connection (transparent proxy active)${NC}"
+    else
+        # tormode OFF — Tor Browser should use its own built-in Tor
+        cat > "$USER_JS" << 'TBUSERJS'
+// Tonix: tormode is OFF — Tor Browser uses its own built-in Tor client.
+user_pref("network.proxy.type", 1);
+user_pref("extensions.torbutton.use_nontor_proxy", false);
+user_pref("extensions.torlauncher.start_tor", true);
+user_pref("extensions.torlauncher.prompt_at_startup", true);
+TBUSERJS
+        chown tonix-browser:tonix-browser "$USER_JS" 2>/dev/null || true
+        echo -e "${CYAN}Tor Browser configured: using built-in Tor client${NC}"
+    fi
+}
+
+# ============================================================================
 # tor_on
 # ============================================================================
 tor_on() {
@@ -210,10 +269,22 @@ tor_on() {
         systemctl start tor
     fi
 
-    # Wait for circuits before locking down — avoids the "everything broken" window
-    wait_for_tor
+    # Wait for Tor to fully bootstrap BEFORE locking down the network.
+    # If we apply iptables while Tor is still bootstrapping, Tor gets cut off
+    # from its directory servers and can never finish — causing total lockout.
+    if ! wait_for_tor; then
+        echo -e "${RED}Aborting tormode — Tor did not bootstrap successfully.${NC}"
+        echo -e "${YELLOW}Tor is running but network is NOT locked down.${NC}"
+        echo -e "${YELLOW}Try: journalctl -u tor -n 50   to diagnose${NC}"
+        # Restore AppArmor since we disabled it
+        restore_apparmor_for_tor
+        return 1
+    fi
 
     apply_iptables
+
+    # Configure Tor Browser to use direct connection (transparent proxy handles Tor routing)
+    configure_torbrowser "direct"
 
     echo "on" > "$STATE_FILE"
 
@@ -264,6 +335,9 @@ tor_off() {
     # Re-enable UFW
     systemctl start ufw 2>/dev/null || true
     ufw --force enable  2>/dev/null || true
+
+    # Restore Tor Browser to use its own built-in Tor client
+    configure_torbrowser "tor"
 
     echo "off" > "$STATE_FILE"
 

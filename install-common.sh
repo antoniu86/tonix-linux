@@ -116,6 +116,66 @@ detect_existing() {
 }
 
 # ============================================================================
+# Prepare device — unmount, close LUKS, disable automount & USB autosuspend
+# ============================================================================
+prepare_device() {
+    info "Preparing $TARGET for installation..."
+
+    # 1. Close any open LUKS/dm-crypt mappings that reference this device
+    while IFS= read -r dmname; do
+        local dmdev
+        dmdev=$(dmsetup info -c --noheadings -o open_count "$dmname" 2>/dev/null || true)
+        info "Closing dm-crypt mapping: $dmname"
+        cryptsetup close "$dmname" 2>/dev/null || true
+    done < <(dmsetup ls 2>/dev/null | awk '{print $1}' | while read -r name; do
+        dmsetup deps -o devname "$name" 2>/dev/null | grep -q "$(basename "$TARGET")" && echo "$name"
+    done)
+
+    # 2. Unmount all partitions of the target device (reverse order for safety)
+    local mounted
+    mounted=$(mount | awk -v dev="$TARGET" '$1 ~ dev {print $1}' | sort -r)
+    if [[ -n "$mounted" ]]; then
+        while IFS= read -r part; do
+            info "Unmounting $part..."
+            umount -l "$part" 2>/dev/null || true
+        done <<< "$mounted"
+    fi
+
+    # 3. Disable GNOME automount so the OS doesn't re-mount partitions mid-install
+    if command -v gsettings &>/dev/null && [[ -n "${SUDO_USER:-}" ]]; then
+        sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.media-handling automount false      2>/dev/null || true
+        sudo -u "$SUDO_USER" gsettings set org.gnome.desktop.media-handling automount-open false 2>/dev/null || true
+    fi
+
+    # 4. Disable USB autosuspend for the target drive to prevent bus dropouts
+    #    during heavy writes (mkfs, tar extract). Find the sysfs path by matching
+    #    the block device back to its USB port.
+    local sysblock
+    sysblock=$(readlink -f /sys/block/"$(basename "$TARGET")" 2>/dev/null || true)
+    if [[ -n "$sysblock" ]]; then
+        # Walk up the sysfs tree to find the USB device directory
+        local syspath="$sysblock"
+        while [[ "$syspath" != "/" ]]; do
+            if [[ -f "$syspath/idVendor" ]]; then
+                local portpath="$syspath"
+                if [[ -f "$portpath/power/autosuspend" ]]; then
+                    echo -1 > "$portpath/power/autosuspend"   2>/dev/null || true
+                    echo on > "$portpath/power/control"        2>/dev/null || true
+                    info "USB autosuspend disabled for $(basename "$portpath")"
+                fi
+                break
+            fi
+            syspath=$(dirname "$syspath")
+        done
+    fi
+
+    # 5. Give udev a moment to settle after any unmounts
+    udevadm settle --timeout=5 2>/dev/null || sleep 2
+
+    ok "Device $TARGET is ready"
+}
+
+# ============================================================================
 # Partition the drive
 # ============================================================================
 partition_drive() {
@@ -664,6 +724,7 @@ do_install() {
     trap cleanup EXIT
 
     preflight
+    prepare_device
     detect_existing
     partition_drive
     format_partitions

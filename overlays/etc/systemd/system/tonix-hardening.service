@@ -1,12 +1,13 @@
 [Unit]
 Description=Tonix RAM Wipe on Shutdown
 DefaultDependencies=no
-Before=shutdown.target reboot.target halt.target
-After=final.target
+Before=umount.target
+After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/tonix-ram-wipe
+TimeoutStopSec=35
 
 [Install]
 WantedBy=shutdown.target reboot.target halt.target
