@@ -139,11 +139,13 @@ CHROOT_KISMET_REPO
     # Best-effort packages (firmware + DNS protection)
     chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_OPTIONAL'
 export DEBIAN_FRONTEND=noninteractive
-for pkg in firmware-mediatek dnscrypt-proxy; do
+for pkg in firmware-mediatek; do
     apt install -y "$pkg" 2>/dev/null \
         && echo "OK: $pkg" \
         || echo "WARN: $pkg not available, skipping"
 done
+# dnscrypt-proxy removed — it takes over port 53 on boot with no config,
+# breaking DNS entirely. Tor handles DNS when tormode is active.
 CHROOT_OPTIONAL
 
     local all_packages
@@ -346,7 +348,10 @@ systemctl enable NetworkManager 2>/dev/null || true
 systemctl disable lightdm 2>/dev/null || true
 systemctl enable apparmor 2>/dev/null || true
 systemctl enable ufw 2>/dev/null || true
-systemctl enable tor 2>/dev/null || true
+# tor is NOT enabled at boot — it starts on demand via tonix-tormode
+# Enabling it at boot with no transparent proxy config wastes resources
+# and can cause DNS conflicts before NetworkManager is ready.
+systemctl disable tor 2>/dev/null || true
 
 # Disable unnecessary services
 systemctl mask bluetooth 2>/dev/null || true
@@ -443,6 +448,18 @@ EOF_OS
 # --- Create regular user 'tonix' with sudo access ---
 useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev tonix
 echo "tonix:tonix" | chpasswd
+
+# --- Sudoers configuration ---
+# tonix can run all sudo commands without password (it's the primary user)
+cat > /etc/sudoers.d/tonix << 'EOF_SUDOERS'
+# Tonix primary user — full sudo without password
+tonix ALL=(ALL) NOPASSWD: ALL
+
+# tonix-browser can only run specific commands needed by the tor-browser launcher
+tonix-browser ALL=(root) NOPASSWD: /usr/sbin/aa-complain
+tonix-browser ALL=(root) NOPASSWD: /usr/bin/tee /proc/sys/kernel/unprivileged_userns_clone
+EOF_SUDOERS
+chmod 440 /etc/sudoers.d/tonix
 
 # Add to wireshark group only if it exists (created by wireshark package)
 if getent group wireshark &>/dev/null; then

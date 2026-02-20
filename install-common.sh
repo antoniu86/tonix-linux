@@ -58,7 +58,7 @@ preflight() {
     fi
 
     # Check required tools
-    for cmd in parted mkfs.vfat mkfs.ext4 cryptsetup grub-install tar pv blkid; do
+    for cmd in parted mkfs.vfat mkfs.ext4 cryptsetup grub-install tar pv blkid sgdisk; do
         command -v "$cmd" &>/dev/null || die "Required tool not found: $cmd"
     done
 
@@ -78,7 +78,9 @@ detect_existing() {
         HOME_PART="${TARGET}p4"
     fi
 
-    # Also detect old 3-partition layout (no BIOS boot partition) and warn
+    # Detect old 3-partition layout (no BIOS boot partition)
+    # In this layout sda3 was /home — we cannot preserve it because partition
+    # numbers shift when we add the BIOS boot partition (new sda1).
     local old_home="${TARGET}3"
     [[ "$TARGET" =~ [0-9]$ ]] && old_home="${TARGET}p3"
     if [[ ! -b "$HOME_PART" ]] && [[ -b "$old_home" ]]; then
@@ -86,21 +88,22 @@ detect_existing() {
         warn "Upgrading to 4-partition layout — /home (partition 3) cannot be preserved."
         warn "Your /home data will be erased. Back it up first if needed."
         HOME_PART="$old_home"
-        # Force fresh install; can't preserve since partition numbers shift
+        return  # Cannot preserve — partition numbers will shift
     fi
 
     if [[ -b "$HOME_PART" ]]; then
         echo ""
-        warn "Found existing partition: $HOME_PART"
+        info "Found existing partition: $HOME_PART"
 
         if cryptsetup isLuks "$HOME_PART" 2>/dev/null; then
             info "Partition is LUKS encrypted — looks like an existing /home"
             echo ""
 
             if [[ "${NONINTERACTIVE:-0}" != "1" ]]; then
-                read -rp "Preserve existing encrypted /home? (yes/no): " ans
-                if [[ "$ans" == "yes" ]]; then
-                    PRESERVE_HOME=true
+                # Default to YES — preserving home is almost always what you want
+                read -rp "Preserve existing encrypted /home? [YES/no]: " ans
+                ans="${ans:-yes}"   # default to yes if user just presses Enter
+                if [[ "${ans,,}" != "no" ]]; then
                     read -rs -p "Enter decryption password to verify: " HOME_PASSWORD
                     echo ""
 
@@ -108,7 +111,10 @@ detect_existing() {
                     if ! echo -n "$HOME_PASSWORD" | cryptsetup open --test-passphrase "$HOME_PART" --key-file=- 2>/dev/null; then
                         die "Wrong password or partition is not valid LUKS"
                     fi
+                    PRESERVE_HOME=true
                     ok "Password verified — /home will be preserved"
+                else
+                    warn "Existing /home will be erased and reformatted."
                 fi
             fi
         fi
@@ -169,8 +175,22 @@ prepare_device() {
         done
     fi
 
-    # 5. Give udev a moment to settle after any unmounts
-    udevadm settle --timeout=5 2>/dev/null || sleep 2
+    # 5. Force kernel to release all partition references on the target device.
+    #    partx --delete removes each partition's block device from the kernel
+    #    one by one, which succeeds even when partprobe/blockdev --rereadpt
+    #    fail with "partition in use". This is the most reliable method for
+    #    USB drives on xHCI controllers that hold stale partition state.
+    local partnum
+    for partnum in 4 3 2 1; do
+        local pdev="${TARGET}${partnum}"
+        [[ "$TARGET" =~ [0-9]$ ]] && pdev="${TARGET}p${partnum}"
+        if [[ -b "$pdev" ]]; then
+            partx --delete --nr "$partnum" "$TARGET" 2>/dev/null || true
+        fi
+    done
+
+    # Give udev a moment to settle after partition removal
+    udevadm settle --timeout=8 2>/dev/null || sleep 3
 
     ok "Device $TARGET is ready"
 }
@@ -186,9 +206,17 @@ partition_drive() {
     if [[ "$PRESERVE_HOME" == true ]]; then
         info "Preserving /home — only reformatting ESP (part 2) and root (part 3)..."
         # Keep part 1 (BIOS boot) and part 4 (encrypted /home) intact.
-        parted "$TARGET" --script \
-            rm 2 \
-            rm 3 \
+        # Remove only partitions that actually exist — missing partitions cause
+        # parted to abort with "Partition doesn't exist" and exit non-zero.
+        local rm_cmds=""
+        for pnum in 2 3; do
+            local pdev="${TARGET}${pnum}"
+            [[ "$TARGET" =~ [0-9]$ ]] && pdev="${TARGET}p${pnum}"
+            [[ -b "$pdev" ]] && rm_cmds="$rm_cmds rm $pnum"
+        done
+
+        # Build and run the parted command dynamically
+        parted "$TARGET" --script $rm_cmds \
             mkpart ESP fat32 "${bios_end}MiB" "${boot_end}MiB" \
             set 2 boot on \
             set 2 esp on \
@@ -207,10 +235,31 @@ partition_drive() {
             mkpart primary "${root_end}MiB" 100%
     fi
 
-    # Wait for kernel to pick up changes
-    sleep 2
-    partprobe "$TARGET" 2>/dev/null || true
-    sleep 2
+    # Force kernel to re-read the new partition table.
+    # On USB drives the kernel often holds stale partition info — we try
+    # multiple methods with increasing aggression until the partitions appear.
+    local retries=0
+    while (( retries < 5 )); do
+        sleep 2
+        # Try all available methods
+        partprobe "$TARGET"       2>/dev/null || true
+        blockdev --rereadpt "$TARGET" 2>/dev/null || true
+        udevadm settle --timeout=10   2>/dev/null || true
+
+        # Verify the partitions actually appeared in the kernel
+        if [[ -b "${TARGET}3" ]] || [[ -b "${TARGET}p3" ]]; then
+            break
+        fi
+        (( retries++ ))
+        info "Waiting for kernel to register partitions (attempt $retries/5)..."
+    done
+
+    if [[ ! -b "${TARGET}3" ]] && [[ ! -b "${TARGET}p3" ]]; then
+        # Last resort — try to update via sysfs
+        echo 1 > /sys/block/"$(basename "$TARGET")"/device/rescan 2>/dev/null || true
+        sleep 3
+        udevadm settle --timeout=15 2>/dev/null || true
+    fi
 
     # Determine partition device names
     if [[ "$TARGET" =~ [0-9]$ ]]; then
@@ -323,7 +372,15 @@ extract_os() {
     local tarball_size
     tarball_size=$(stat -c%s "$TARBALL_PATH")
 
-    pv -s "$tarball_size" "$TARBALL_PATH" | tar -xzf - -C "$MOUNT_ROOT"
+    if [[ "$PRESERVE_HOME" == true ]]; then
+        # Exclude /home/* from extraction — the encrypted partition is already
+        # mounted at $MOUNT_ROOT/home and contains the user's existing data.
+        # Extracting the tarball's /home/tonix skeleton would wipe it.
+        info "Skipping /home from extraction (preserving existing encrypted /home)..."
+        pv -s "$tarball_size" "$TARBALL_PATH" | tar -xzf - -C "$MOUNT_ROOT"             --exclude='./home/*'             --exclude='home/*'
+    else
+        pv -s "$tarball_size" "$TARBALL_PATH" | tar -xzf - -C "$MOUNT_ROOT"
+    fi
 
     ok "OS extracted"
 }
@@ -683,6 +740,8 @@ cleanup() {
 
     # Only unmount if MOUNT_ROOT exists
     if [[ -d "${MOUNT_ROOT:-}" ]]; then
+        # Flush all pending writes before unmounting
+        sync
         umount "$MOUNT_ROOT/home"                       2>/dev/null || true
         cryptsetup close secure_home                     2>/dev/null || true
         umount "$MOUNT_ROOT/boot"                        2>/dev/null || true
@@ -694,7 +753,25 @@ cleanup() {
         rmdir "$MOUNT_ROOT" 2>/dev/null || true
     fi
 
+    # Final sync — flush kernel page cache to disk
     sync
+
+    # Fix and verify GPT backup partition table AFTER all writes are done.
+    # GPT stores a copy at both start and end of disk. This must run after
+    # all data is written (not during partitioning) so the backup reflects
+    # the final disk state. Without this, the kernel can't read partitions
+    # after the drive is replugged.
+    if [[ -n "${TARGET:-}" ]] && [[ -b "$TARGET" ]]; then
+        if command -v sgdisk &>/dev/null; then
+            info "Finalizing GPT partition table..."
+            sgdisk --move-second-header "$TARGET" 2>/dev/null || true
+            sgdisk --verify "$TARGET"             2>/dev/null || true
+        fi
+        # Flush the USB drive's internal write cache — sync alone is not
+        # enough for USB drives which have their own on-device cache.
+        blockdev --flushbufs "$TARGET" 2>/dev/null || true
+        sync
+    fi
 
     ok "Cleanup complete"
 }
@@ -724,8 +801,8 @@ do_install() {
     trap cleanup EXIT
 
     preflight
+    detect_existing   # must run before prepare_device which removes partition nodes
     prepare_device
-    detect_existing
     partition_drive
     format_partitions
     mount_target

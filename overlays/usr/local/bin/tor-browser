@@ -1,18 +1,38 @@
 #!/bin/bash
 # Tonix Tor Browser Launcher
+#
+# Handles all launch contexts:
+#   - Called as root (e.g. sudo tor-browser)
+#   - Called as tonix user directly
+#   - Called as tonix-browser user (final execution)
 
 TOR_DIR="/opt/tor-browser"
 BROWSER_BIN="$TOR_DIR/Browser/start-tor-browser"
 
-# 1. Tor Browser refuses to run as root — re-launch as tonix-browser user
+# ── Resolve DISPLAY if not set (happens when sudo strips environment) ──
+if [[ -z "$DISPLAY" ]]; then
+    DISPLAY=$(who | grep -oP '\(:\d+\)' | head -1 | tr -d '()')
+    [[ -z "$DISPLAY" ]] && DISPLAY=":0"
+    export DISPLAY
+fi
+
+# ── If running as root, drop to tonix-browser ──
 if [[ $EUID -eq 0 ]]; then
     if ! id tonix-browser &>/dev/null; then
         useradd -r -s /usr/sbin/nologin -d /var/lib/tonix-browser -m tonix-browser 2>/dev/null || true
     fi
-    # Extract xauth cookie to a temp file readable by tonix-browser
+
+    # Find xauth cookie — try current user first, then the logged-in console user
     XAUTH_FILE=$(mktemp /tmp/.xauth-XXXXXX)
-    xauth extract "$XAUTH_FILE" "$DISPLAY" 2>/dev/null || true
+    LOGGED_IN_USER=$(who | awk 'NR==1{print $1}')
+
+    if ! xauth extract "$XAUTH_FILE" "$DISPLAY" 2>/dev/null; then
+        if [[ -n "$LOGGED_IN_USER" ]]; then
+            sudo -u "$LOGGED_IN_USER" xauth extract "$XAUTH_FILE" "$DISPLAY" 2>/dev/null || true
+        fi
+    fi
     chmod 644 "$XAUTH_FILE"
+
     exec sudo -u tonix-browser \
         DISPLAY="$DISPLAY" \
         XAUTHORITY="$XAUTH_FILE" \
@@ -20,13 +40,33 @@ if [[ $EUID -eq 0 ]]; then
         "$0" "$@"
 fi
 
-# 2. Allow unprivileged user namespaces (needed for browser internal sandbox)
+# ── If running as a regular user (e.g. tonix), re-exec as tonix-browser ──
+if [[ "$USER" != "tonix-browser" ]]; then
+    if ! id tonix-browser &>/dev/null; then
+        echo "Error: tonix-browser user does not exist."
+        exit 1
+    fi
+
+    XAUTH_FILE=$(mktemp /tmp/.xauth-XXXXXX)
+    xauth extract "$XAUTH_FILE" "$DISPLAY" 2>/dev/null || true
+    chmod 644 "$XAUTH_FILE"
+
+    exec sudo -u tonix-browser \
+        DISPLAY="$DISPLAY" \
+        XAUTHORITY="$XAUTH_FILE" \
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
+        "$0" "$@"
+fi
+
+# ── Running as tonix-browser — do the actual launch ──
+
+# Allow unprivileged user namespaces (needed for browser internal sandbox)
 USERNS_SETTING="/proc/sys/kernel/unprivileged_userns_clone"
 if [[ -f "$USERNS_SETTING" ]] && [[ $(cat "$USERNS_SETTING") == "0" ]]; then
     echo 1 | sudo tee "$USERNS_SETTING" > /dev/null 2>&1 || true
 fi
 
-# 3. Set AppArmor to complain mode for browser profiles if loaded
+# Set AppArmor to complain mode for browser profiles if loaded
 if command -v aa-status &>/dev/null && aa-status --enabled 2>/dev/null; then
     for profile in torbrowser firefox; do
         if aa-status 2>/dev/null | grep -q "$profile"; then
@@ -35,10 +75,14 @@ if command -v aa-status &>/dev/null && aa-status --enabled 2>/dev/null; then
     done
 fi
 
-# 4. Launch
+# Clean up stale lock files from previous sessions
+find "$TOR_DIR" /var/lib/tonix-browser \
+    -name "lock" -o -name ".parentlock" 2>/dev/null | xargs rm -f 2>/dev/null || true
+
+# Launch
 cd "$TOR_DIR"
 if [[ -x "$BROWSER_BIN" ]]; then
-    exec "$BROWSER_BIN" --detach "$@"
+    exec "$BROWSER_BIN" "$@"
 else
     echo "Error: Tor Browser not found at $TOR_DIR"
     echo "Reinstall with: tonix-update-torbrowser"
