@@ -16,8 +16,8 @@
 
 set -euo pipefail
 
-# FIX 1: Ensure /usr/sbin and /sbin are in PATH (Debian 12 omits them in
-#         non-login shells, causing iptables/ip6tables to appear missing)
+# Ensure /usr/sbin and /sbin are in PATH — Debian 12 omits them in
+# non-login shells, causing iptables/ip6tables to appear missing
 export PATH="/usr/sbin:/sbin:$PATH"
 
 TOR_USER="debian-tor"
@@ -46,6 +46,12 @@ done
 configure_tor() {
     mkdir -p /etc/tor/torrc.d
 
+    # IMPORTANT: Do NOT set SocksPort here.
+    # The default /etc/tor/torrc on Debian Bookworm already has:
+    #   SocksPort 9050
+    # Adding SocksPort again in this drop-in causes Tor to try to bind port
+    # 9050 twice → EADDRINUSE → Tor exits immediately → silent crash loop.
+    # TransPort and DNSPort are safe to add here as they are not in the default torrc.
     cat > "$TOR_DROPIN" << EOF
 # Tonix transparent proxy configuration
 # Managed by tonix-tormode — do not edit manually
@@ -53,8 +59,7 @@ configure_tor() {
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 TransPort 127.0.0.1:${TOR_TRANS_PORT}
-DNSPort 127.0.0.1:${TOR_DNS_PORT}
-SocksPort ${TOR_SOCKS_PORT}
+DNSPort   127.0.0.1:${TOR_DNS_PORT}
 EOF
 
     # Ensure torrc includes the drop-in directory (idempotent)
@@ -66,29 +71,50 @@ EOF
 }
 
 # ============================================================================
-# FIX 2: Disable AppArmor confinement for Tor
+# Disable AppArmor confinement for Tor
 # The default system_tor AppArmor profile blocks Tor from binding to custom
 # ports (TransPort 9040, DNSPort 5300), causing Tor to run but not listen.
+#
+# IMPORTANT: aa-complain keeps the profile loaded in the kernel and only
+# switches to audit/log mode — on some Debian kernel builds this still
+# restricts capabilities and prevents port binding.
+# aa-disable (or apparmor_parser -R) REMOVES the profile from the kernel
+# entirely, which is the only reliable way to give Tor unrestricted access.
 # ============================================================================
 disable_apparmor_for_tor() {
-    if command -v aa-status &>/dev/null && aa-status --enabled 2>/dev/null; then
-        echo -e "${CYAN}Disabling AppArmor confinement for Tor...${NC}"
-
-        # Try complain mode first (softer — logs but doesn't block)
-        if aa-complain system_tor 2>/dev/null; then
-            echo -e "${GREEN}AppArmor set to complain mode for Tor.${NC}"
-        # Fall back to full disable via profile unload
-        elif apparmor_parser -R /etc/apparmor.d/system_tor 2>/dev/null; then
-            echo -e "${GREEN}AppArmor profile unloaded for Tor.${NC}"
-        else
-            echo -e "${YELLOW}Warning: Could not modify AppArmor for Tor — ports may not bind.${NC}"
-        fi
+    if ! command -v aa-status &>/dev/null || ! aa-status --enabled 2>/dev/null; then
+        return 0   # AppArmor not active — nothing to do
     fi
+
+    echo -e "${CYAN}Removing AppArmor confinement for Tor...${NC}"
+
+    # Primary: aa-disable removes the profile from the running kernel entirely
+    if command -v aa-disable &>/dev/null && aa-disable system_tor 2>/dev/null; then
+        echo -e "${GREEN}AppArmor profile disabled for Tor.${NC}"
+        return 0
+    fi
+
+    # Fallback: directly unload the profile via apparmor_parser
+    if [[ -f /etc/apparmor.d/system_tor ]] && apparmor_parser -R /etc/apparmor.d/system_tor 2>/dev/null; then
+        echo -e "${GREEN}AppArmor profile unloaded for Tor.${NC}"
+        return 0
+    fi
+
+    # Last resort: try by executable path
+    if apparmor_parser -R /usr/sbin/tor 2>/dev/null; then
+        echo -e "${GREEN}AppArmor profile unloaded for Tor (by path).${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Warning: Could not remove AppArmor confinement for Tor — ports may not bind.${NC}"
 }
 
 restore_apparmor_for_tor() {
-    if command -v aa-status &>/dev/null && aa-status --enabled 2>/dev/null; then
-        # Re-enforce the profile on tor_off
+    if ! command -v aa-status &>/dev/null || ! aa-status --enabled 2>/dev/null; then
+        return 0
+    fi
+
+    if [[ -f /etc/apparmor.d/system_tor ]]; then
         apparmor_parser -r /etc/apparmor.d/system_tor 2>/dev/null || true
         echo -e "${GREEN}AppArmor profile restored for Tor.${NC}"
     fi
@@ -96,38 +122,90 @@ restore_apparmor_for_tor() {
 
 # ============================================================================
 # Wait for Tor to bootstrap (up to 120s)
-# Returns 0 on success, 1 on timeout
+# Accepts a pre-start timestamp (LOCAL time) so we only read logs from THIS run.
+# Returns 0 on success, 1 on timeout or detected failure.
 # ============================================================================
 wait_for_tor() {
+    local start_ts="${1:-2000-01-01 00:00:00}"
+
     echo -e "${CYAN}Waiting for Tor to bootstrap...${NC}"
 
-    # Record the exact timestamp when Tor was started so we only check
-    # journal entries SINCE THIS RUN — not from previous sessions which
-    # would cause wait_for_tor to return true immediately on stale entries.
-    local tor_start_time
-    tor_start_time=$(systemctl show tor --property=ActiveEnterTimestamp         | cut -d= -f2)
-
     local i=0
+    local last_progress=""
+    local last_progress_at=-1
+
     while (( i < 120 )); do
-        # Only look at journal entries since this Tor session started
-        if journalctl -u tor --since "$tor_start_time" --no-pager 2>/dev/null                 | grep -q "Bootstrapped 100%"; then
+        # ── Read journal: check both 'tor' and 'tor@default' service names.
+        # Debian sometimes logs under tor@default.service instead of tor.service.
+        local logs
+        logs=$(journalctl -u tor -u 'tor@default.service' \
+            --since "$start_ts" --no-pager 2>/dev/null || true)
+
+        # Show bootstrap progress updates
+        local progress
+        progress=$(echo "$logs" | grep -o 'Bootstrapped [0-9]*%[^:]*' | tail -1 || true)
+        if [[ -n "$progress" && "$progress" != "$last_progress" ]]; then
+            echo -e "\n  ${CYAN}${progress}${NC}"
+            last_progress="$progress"
+            last_progress_at=$i
+        fi
+
+        # ── Success
+        if echo "$logs" | grep -q "Bootstrapped 100%"; then
             echo -e "${GREEN}Tor is ready.${NC}"
             return 0
         fi
-        # Fail fast if Tor died
-        if ! systemctl is-active --quiet tor; then
+
+        # ── Crash loop detection (Bug fix: is-active returns 0 for 'activating'
+        #    too, so a restart loop looks like the service is running fine).
+        #    Instead: check is-failed (permanent failure after systemd gives up)
+        #    OR check the journal for fatal config/bind errors directly.
+        if systemctl is-failed --quiet tor 2>/dev/null; then
             echo ""
-            echo -e "${RED}Tor service stopped unexpectedly.${NC}"
-            echo -e "${YELLOW}Check: journalctl -u tor --since "$tor_start_time" -n 30${NC}"
+            echo -e "${RED}Tor service has permanently failed.${NC}"
+            echo -e "${YELLOW}Last log entries:${NC}"
+            echo "$logs" | tail -20
             return 1
         fi
+
+        if echo "$logs" | grep -qE "Address already in use|Failed to bind|Unable to bind"; then
+            echo ""
+            echo -e "${RED}Tor cannot bind a required port (check for duplicates or conflicts).${NC}"
+            echo "$logs" | grep -E "Address already in use|Failed to bind|Unable to bind" | tail -5
+            return 1
+        fi
+
+        if echo "$logs" | grep -qE "\[err\]|\[warn\].*Unable|\[warn\].*Failed|Problem bootstrapping"; then
+            local err
+            err=$(echo "$logs" | grep -E "\[err\]|Problem bootstrapping" | tail -3)
+            if [[ -n "$err" ]]; then
+                echo ""
+                echo -e "${RED}Tor reported a critical error:${NC}"
+                echo "$err"
+                return 1
+            fi
+        fi
+
+        # ── No progress at all after 30s → something is fundamentally wrong
+        if (( i >= 30 && last_progress_at == -1 )); then
+            echo ""
+            echo -e "${RED}No bootstrap progress after ${i}s — something is blocking Tor.${NC}"
+            echo -e "${YELLOW}Service status:${NC}"
+            systemctl status tor --no-pager -l 2>/dev/null | head -15 || true
+            echo -e "${YELLOW}Last log entries:${NC}"
+            echo "$logs" | tail -20
+            return 1
+        fi
+
         sleep 2
         (( i += 2 ))
-        echo -n "."
+        [[ -z "$progress" || "$progress" == "$last_progress" ]] && echo -n "."
     done
+
     echo ""
     echo -e "${RED}Tor bootstrap timed out after 120s.${NC}"
-    echo -e "${YELLOW}Check: journalctl -u tor --since "$tor_start_time" -n 50${NC}"
+    echo -e "${YELLOW}Last log entries:${NC}"
+    journalctl -u tor -u 'tor@default.service' --since "$start_ts" --no-pager -n 30 2>/dev/null || true
     return 1
 }
 
@@ -191,7 +269,7 @@ apply_iptables() {
     iptables -A OUTPUT -p udp --dport 67 -j ACCEPT
     iptables -A INPUT  -p udp --sport 67 --dport 68 -j ACCEPT
 
-    # FIX 3: Allow non-Tor users to reach Tor's local listeners on loopback.
+    # Allow non-Tor users to reach Tor's local listeners on loopback.
     # The nat table redirects their TCP to TransPort (9040) and DNS to DNSPort (5300),
     # but the filter OUTPUT chain also sees these packets and must explicitly allow them.
     # Without these rules, all browser/app traffic is silently dropped even though
@@ -267,8 +345,16 @@ tor_on() {
 
     configure_tor
 
-    # FIX 2: Disable AppArmor before starting Tor so it can bind to custom ports
+    # Disable AppArmor BEFORE starting Tor so it can bind to custom ports.
+    # Must happen before systemctl (re)start, not after.
     disable_apparmor_for_tor
+
+    # Capture a timestamp NOW (local time) before restart.
+    # journalctl --since interprets timestamps as LOCAL time, not UTC.
+    # Using date -u (UTC) would make --since look 2h into the past on UTC+2
+    # systems, potentially matching stale log entries from previous sessions.
+    local tor_start_ts
+    tor_start_ts=$(date '+%Y-%m-%d %H:%M:%S')
 
     # Start/restart Tor to pick up the new config
     if systemctl is-active --quiet tor; then
@@ -277,13 +363,16 @@ tor_on() {
         systemctl start tor
     fi
 
+    # Brief pause to let systemd register the new activation attempt
+    sleep 2
+
     # Wait for Tor to fully bootstrap BEFORE locking down the network.
     # If we apply iptables while Tor is still bootstrapping, Tor gets cut off
     # from its directory servers and can never finish — causing total lockout.
-    if ! wait_for_tor; then
+    if ! wait_for_tor "$tor_start_ts"; then
         echo -e "${RED}Aborting tormode — Tor did not bootstrap successfully.${NC}"
         echo -e "${YELLOW}Tor is running but network is NOT locked down.${NC}"
-        echo -e "${YELLOW}Try: journalctl -u tor -n 50   to diagnose${NC}"
+        echo -e "${YELLOW}Try: journalctl -u tor --since \"$tor_start_ts\" -n 50   to diagnose${NC}"
         # Restore AppArmor since we disabled it
         restore_apparmor_for_tor
         return 1

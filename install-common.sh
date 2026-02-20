@@ -40,6 +40,129 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
+# User account to create on the installed system (populated by collect_user_info)
+TONIX_USERNAME=""
+TONIX_PASSWORD=""
+
+# ============================================================================
+# Collect username + password for the installed system
+# Must be called AFTER detect_existing() so PRESERVE_HOME is known.
+# ============================================================================
+collect_user_info() {
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════╗"
+    echo "║              User Account Setup                            ║"
+    echo "╚════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    # ── Reinstall path: existing home partitions detected ────────────────
+    if [[ "$PRESERVE_HOME" == true ]]; then
+        # Home is already mounted (detect_existing opened it), enumerate dirs
+        local home_mount="/mnt/tonix-install-probe"
+        local found_users=()
+
+        # Mount temporarily to inspect existing home dirs
+        if ! mountpoint -q "$home_mount" 2>/dev/null; then
+            mkdir -p "$home_mount"
+            echo -n "$HOME_PASSWORD" | cryptsetup open "$HOME_PART" tonix_probe --key-file=- 2>/dev/null || true
+            if [[ -b /dev/mapper/tonix_probe ]]; then
+                mount /dev/mapper/tonix_probe "$home_mount" 2>/dev/null || true
+            fi
+        fi
+
+        if mountpoint -q "$home_mount" 2>/dev/null; then
+            while IFS= read -r d; do
+                local name
+                name=$(basename "$d")
+                # Skip system dirs: lost+found, root, etc.
+                [[ "$name" =~ ^(lost\+found|root)$ ]] && continue
+                found_users+=("$name")
+            done < <(find "$home_mount" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+            umount "$home_mount" 2>/dev/null || true
+            cryptsetup close tonix_probe 2>/dev/null || true
+            rmdir "$home_mount" 2>/dev/null || true
+        fi
+
+        if [[ ${#found_users[@]} -gt 0 ]]; then
+            echo "  Existing home directories found in encrypted /home:"
+            echo ""
+            local i=1
+            for u in "${found_users[@]}"; do
+                echo "    $i) $u"
+                i=$(( i + 1 ))
+            done
+            echo ""
+
+            if [[ ${#found_users[@]} -eq 1 ]]; then
+                # Only one user — no need to ask which
+                TONIX_USERNAME="${found_users[0]}"
+                info "Using existing user: $TONIX_USERNAME"
+            else
+                while true; do
+                    read -rp "  Which user is the main account? Enter name or number: " sel
+                    # Accept a number
+                    if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#found_users[@]} )); then
+                        TONIX_USERNAME="${found_users[$(( sel - 1 ))]}"
+                        break
+                    fi
+                    # Accept a name directly
+                    for u in "${found_users[@]}"; do
+                        if [[ "$u" == "$sel" ]]; then
+                            TONIX_USERNAME="$sel"
+                            break 2
+                        fi
+                    done
+                    warn "  Invalid selection — enter a number or exact username."
+                done
+            fi
+
+            echo ""
+            info "Existing /home/$TONIX_USERNAME will be kept as-is."
+            info "Set a new login password for $TONIX_USERNAME:"
+            echo ""
+
+        else
+            warn "Could not enumerate existing home directories — treating as fresh install."
+            PRESERVE_HOME=false
+        fi
+    fi
+
+    # ── Fresh install path ────────────────────────────────────────────────
+    if [[ -z "$TONIX_USERNAME" ]]; then
+        info "Choose a username for your Tonix account."
+        echo ""
+        while true; do
+            read -rp "  Username: " TONIX_USERNAME
+            TONIX_USERNAME="${TONIX_USERNAME,,}"   # lowercase
+            # Validate: letters/digits/underscore/hyphen, 2-32 chars, start with letter
+            if [[ "$TONIX_USERNAME" =~ ^[a-z][a-z0-9_-]{1,31}$ ]]; then
+                break
+            fi
+            warn "  Invalid username. Use 2-32 lowercase letters/digits/_ /-, starting with a letter."
+            TONIX_USERNAME=""
+        done
+    fi
+
+    # ── Password (both paths) ─────────────────────────────────────────────
+    while true; do
+        read -rs -p "  Password for $TONIX_USERNAME: " p1; echo ""
+        read -rs -p "  Confirm password:              " p2; echo ""
+        if [[ "$p1" == "$p2" ]]; then
+            if [[ ${#p1} -ge 4 ]]; then
+                TONIX_PASSWORD="$p1"
+                break
+            else
+                warn "  Password must be at least 4 characters."
+            fi
+        else
+            warn "  Passwords do not match — try again."
+        fi
+    done
+
+    echo ""
+    ok "User account: $TONIX_USERNAME"
+}
+
 # ============================================================================
 # Preflight checks
 # ============================================================================
@@ -206,17 +329,29 @@ partition_drive() {
     if [[ "$PRESERVE_HOME" == true ]]; then
         info "Preserving /home — only reformatting ESP (part 2) and root (part 3)..."
         # Keep part 1 (BIOS boot) and part 4 (encrypted /home) intact.
-        # Remove only partitions that actually exist — missing partitions cause
-        # parted to abort with "Partition doesn't exist" and exit non-zero.
-        local rm_cmds=""
-        for pnum in 2 3; do
-            local pdev="${TARGET}${pnum}"
-            [[ "$TARGET" =~ [0-9]$ ]] && pdev="${TARGET}p${pnum}"
-            [[ -b "$pdev" ]] && rm_cmds="$rm_cmds rm $pnum"
-        done
+        #
+        # IMPORTANT: Do NOT gate parted rm on [[ -b $pdev ]].
+        # prepare_device() already ran partx --delete which removes the kernel
+        # block devices (/dev/sda2, /dev/sda3), so -b tests return false and
+        # the rm calls get skipped entirely. Parted then tries mkpart against a
+        # GPT that still has entries for parts 2 and 3, sees no free space, and
+        # places the new partitions at end-of-disk with the infamous
+        # "closest location we can manage is 31.7GB" error.
+        #
+        # Fix: always run parted rm unconditionally (|| true absorbs the
+        # benign error if a partition doesn't exist in the GPT).
 
-        # Build and run the parted command dynamically
-        parted "$TARGET" --script $rm_cmds \
+        # Step 1: Remove partitions 2 and 3 from the GPT
+        parted "$TARGET" --script rm 2 2>/dev/null || true
+        parted "$TARGET" --script rm 3 2>/dev/null || true
+
+        # Step 2: Force kernel + parted to re-read the updated table before mkpart
+        partprobe "$TARGET" 2>/dev/null || true
+        udevadm settle --timeout=10 2>/dev/null || true
+        sleep 2
+
+        # Step 3: Create new ESP (part 2) and root (part 3) in fresh invocation
+        parted "$TARGET" --script \
             mkpart ESP fat32 "${bios_end}MiB" "${boot_end}MiB" \
             set 2 boot on \
             set 2 esp on \
@@ -386,6 +521,116 @@ extract_os() {
 }
 
 # ============================================================================
+# Create or rename the primary user account on the installed system
+# Uses TONIX_USERNAME / TONIX_PASSWORD / PRESERVE_HOME set earlier.
+# The tarball always contains a user named 'tonix' as a template.
+# ============================================================================
+create_user() {
+    local target_user="$TONIX_USERNAME"
+    local target_pass="$TONIX_PASSWORD"
+
+    info "Configuring user account: $target_user"
+
+    # Bind mounts should already be up from configure_system(), but ensure
+    # /proc is mounted for chroot commands that need it.
+    mount --bind /proc "$MOUNT_ROOT/proc" 2>/dev/null || true
+
+    chroot "$MOUNT_ROOT" /bin/bash << CHROOT_USER
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+TARGET_USER="${target_user}"
+TARGET_PASS="${target_pass}"
+PRESERVE="${PRESERVE_HOME}"
+
+# ── Step 1: Ensure the target user exists ──────────────────────────────────
+
+if id "\$TARGET_USER" &>/dev/null; then
+    # User already exists (e.g. preserved home with matching name in /etc/passwd)
+    echo "[user] \$TARGET_USER already in /etc/passwd — updating password only"
+else
+    if [[ "\$PRESERVE" == "true" ]]; then
+        # Preserved home: the existing home dir already belongs to this user.
+        # Rename the baked-in 'tonix' account to the chosen username, or
+        # create a fresh account pointing at the existing home dir.
+        if id tonix &>/dev/null && [[ "\$TARGET_USER" != "tonix" ]]; then
+            echo "[user] Renaming baked-in 'tonix' → \$TARGET_USER"
+            usermod -l  "\$TARGET_USER" tonix
+            usermod -d  "/home/\$TARGET_USER" -m "\$TARGET_USER" 2>/dev/null || \
+                usermod -d "/home/\$TARGET_USER" "\$TARGET_USER"
+            groupmod  -n "\$TARGET_USER" tonix 2>/dev/null || true
+        elif [[ "\$TARGET_USER" == "tonix" ]]; then
+            : # keeping the baked-in name, nothing to rename
+        else
+            # tonix account gone (shouldn't happen) — create fresh
+            useradd -m -s /bin/bash \
+                -G sudo,audio,video,plugdev,netdev \
+                -d "/home/\$TARGET_USER" \
+                "\$TARGET_USER"
+        fi
+    else
+        # Fresh install: rename the template 'tonix' user (it has no home data yet)
+        if id tonix &>/dev/null && [[ "\$TARGET_USER" != "tonix" ]]; then
+            echo "[user] Renaming baked-in 'tonix' → \$TARGET_USER"
+            usermod -l  "\$TARGET_USER" tonix
+            usermod -d  "/home/\$TARGET_USER" -m "\$TARGET_USER"
+            groupmod  -n "\$TARGET_USER" tonix 2>/dev/null || true
+        elif [[ "\$TARGET_USER" == "tonix" ]]; then
+            : # keeping the template name, nothing to do
+        else
+            useradd -m -s /bin/bash \
+                -G sudo,audio,video,plugdev,netdev \
+                "\$TARGET_USER"
+        fi
+    fi
+fi
+
+# ── Step 2: Set password ───────────────────────────────────────────────────
+echo "\$TARGET_USER:\$TARGET_PASS" | chpasswd
+
+# ── Step 3: Ensure group memberships (rename may have dropped some) ────────
+for grp in sudo audio video plugdev netdev; do
+    getent group "\$grp" &>/dev/null && usermod -aG "\$grp" "\$TARGET_USER" || true
+done
+if getent group wireshark &>/dev/null; then
+    usermod -aG wireshark "\$TARGET_USER"
+fi
+
+# ── Step 4: Fix sudoers — replace 'tonix' with actual username ────────────
+SUDOERS_FILE="/etc/sudoers.d/tonix"
+if [[ -f "\$SUDOERS_FILE" ]]; then
+    # Replace any occurrence of the old 'tonix' user line with the real one
+    sed -i "s|^tonix |${target_user} |g" "\$SUDOERS_FILE"
+    # Also rename the file itself to match the user (cosmetic but clean)
+    if [[ "\$TARGET_USER" != "tonix" ]]; then
+        mv "\$SUDOERS_FILE" "/etc/sudoers.d/\$TARGET_USER"
+        chmod 440 "/etc/sudoers.d/\$TARGET_USER"
+    fi
+fi
+# Ensure tonix-browser sudoers still grants the right helpers
+# (this line doesn't need username substitution — it's for tonix-browser)
+
+# ── Step 5: Fix home dir ownership if preserved ───────────────────────────
+if [[ "\$PRESERVE" == "true" ]] && [[ -d "/home/\$TARGET_USER" ]]; then
+    local_uid=\$(id -u "\$TARGET_USER")
+    local_gid=\$(id -g "\$TARGET_USER")
+    chown "\$local_uid:\$local_gid" "/home/\$TARGET_USER"
+    # Only fix top-level ownership — leave user files untouched
+fi
+
+# ── Step 6: Update MOTD to show the real username ────────────────────────
+if [[ -f /etc/motd ]]; then
+    sed -i "s|Switch to root:.*|Switch to root:   sudo -i          (password: \$TARGET_PASS)|g" /etc/motd 2>/dev/null || true
+fi
+
+echo "[user] Account setup complete: \$TARGET_USER"
+CHROOT_USER
+
+    umount "$MOUNT_ROOT/proc" 2>/dev/null || true
+    ok "User account configured: $target_user"
+}
+
+# ============================================================================
 # Configure the installed system
 # ============================================================================
 configure_system() {
@@ -440,6 +685,9 @@ CHROOT_INIT
     umount "$MOUNT_ROOT/sys"  2>/dev/null || true
 
     ok "Initramfs updated"
+
+    # Configure the primary user account (username/password collected earlier)
+    create_user
 }
 
 # ============================================================================
@@ -802,6 +1050,7 @@ do_install() {
 
     preflight
     detect_existing   # must run before prepare_device which removes partition nodes
+    collect_user_info # ask username+password (uses PRESERVE_HOME from detect_existing)
     prepare_device
     partition_drive
     format_partitions
@@ -818,7 +1067,7 @@ do_install() {
     echo "║  ✓ Installation complete!                                  ║"
     echo "║                                                            ║"
     echo "║  Remove installer media, then boot from $TARGET"
-    echo "║  You will be prompted for your /home encryption password.  ║"
+    echo "║  Login: $TONIX_USERNAME  (use the password you set)        ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 }

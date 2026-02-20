@@ -345,7 +345,12 @@ systemctl enable tonix-early-mac.service 2>/dev/null || true
 
 # Enable core services
 systemctl enable NetworkManager 2>/dev/null || true
+# Boot to CLI — users run startxfce4 manually to start the GUI.
+# LightDM is masked entirely to prevent it from auto-starting via
+# graphical.target → display-manager.service even when "disabled".
 systemctl disable lightdm 2>/dev/null || true
+systemctl mask    lightdm 2>/dev/null || true
+systemctl set-default multi-user.target 2>/dev/null || true
 systemctl enable apparmor 2>/dev/null || true
 systemctl enable ufw 2>/dev/null || true
 # tor is NOT enabled at boot — it starts on demand via tonix-tormode
@@ -369,6 +374,234 @@ update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all
 CHROOT_SERVICES
 
     ok "Services configured"
+
+    # --- Phase 5b: Tonix Wallpapers & XFCE4 Desktop Branding ---
+    header "Phase 5b: Wallpapers & XFCE4 branding"
+
+    local wp_src="$SCRIPT_DIR/resources/wallpapers"
+    local wp_dest="$CHROOT_DIR/usr/share/backgrounds/tonix"
+
+    # Remove all Debian default wallpapers
+    rm -f  "$CHROOT_DIR/usr/share/backgrounds/"*.png \
+           "$CHROOT_DIR/usr/share/backgrounds/"*.jpg \
+           "$CHROOT_DIR/usr/share/backgrounds/"*.jpeg \
+           "$CHROOT_DIR/usr/share/backgrounds/"*.svg \
+           "$CHROOT_DIR/usr/share/backgrounds/"*.xml 2>/dev/null || true
+    rm -rf "$CHROOT_DIR/usr/share/backgrounds/desktop-background" 2>/dev/null || true
+    rm -rf "$CHROOT_DIR/usr/share/xfce4/backdrops" 2>/dev/null || true
+    rm -rf "$CHROOT_DIR/usr/share/desktop-base" 2>/dev/null || true
+    ok "Debian wallpapers removed"
+
+    # Install Tonix wallpapers
+    mkdir -p "$wp_dest"
+    local wp_found=0
+    for wp in tonix-circuit.png tonix-sunset.png tonix-blue.png tonix-matrix.png; do
+        if [[ -f "$wp_src/$wp" ]]; then
+            cp "$wp_src/$wp" "$wp_dest/"
+            wp_found=$(( wp_found + 1 ))
+            info "Installed wallpaper: $wp"
+        else
+            warn "Wallpaper missing: resources/wallpapers/$wp — add this file before building"
+        fi
+    done
+
+    if [[ $wp_found -gt 0 ]]; then
+        ok "Installed $wp_found / 4 Tonix wallpapers → /usr/share/backgrounds/tonix/"
+    else
+        warn "No wallpapers installed — add PNG files to resources/wallpapers/ and rebuild"
+    fi
+
+    # --- Configure XFCE4 default wallpaper (tonix-sunset.png) ---
+    # Three-layer approach ensures the wallpaper applies regardless of monitor name:
+    #   1. /etc/xdg/ — system-wide xfconf default (read by xfconfd before user config)
+    #   2. ~/.config/ — per-user override copied into /home/tonix and /etc/skel
+    #   3. Autostart script — runs at each login and force-sets the wallpaper for the
+    #      actual monitor name, covering cases where xfce4-desktop already created
+    #      the property with its own default before our XML was consulted.
+    chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_WALLPAPER'
+set -e
+
+WALLPAPER="/usr/share/backgrounds/tonix/tonix-sunset.png"
+
+# Build the xfce4-desktop XML once — used in all three locations below.
+# We cover every common monitor name variant. The autostart script handles
+# any name not in this list by enumerating live xfconf properties at runtime.
+build_xfce4_xml() {
+    cat << 'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorVirtual-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorVirtual1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorHDMI-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorHDMI-2" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorDP-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorDP-2" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitoreDISPLAY" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitorVGA-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+      <property name="monitoreDP-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="image-path" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/tonix/tonix-sunset.png"/>
+        </property>
+      </property>
+    </property>
+  </property>
+</channel>
+XML
+}
+
+# --- Layer 1: /etc/xdg/ — system-wide xfconf default ---
+# xfconfd reads this BEFORE the user's ~/.config/ on a fresh session.
+# This is the highest-priority static fallback.
+XDG_XFCONF="/etc/xdg/xfce4/xfconf/xfce-perchannel-xml"
+mkdir -p "$XDG_XFCONF"
+build_xfce4_xml > "$XDG_XFCONF/xfce4-desktop.xml"
+
+# --- Layer 2: /etc/skel/ + /home/tonix/ — per-user config ---
+# Populated into skel for future users, and directly into /home/tonix
+# since useradd already ran before skel was created.
+SKEL_XFCONF="/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml"
+TONIX_XFCONF="/home/tonix/.config/xfce4/xfconf/xfce-perchannel-xml"
+mkdir -p "$SKEL_XFCONF" "$TONIX_XFCONF"
+build_xfce4_xml > "$SKEL_XFCONF/xfce4-desktop.xml"
+build_xfce4_xml > "$TONIX_XFCONF/xfce4-desktop.xml"
+chown -R tonix:tonix /home/tonix/.config
+
+# --- Layer 3: Autostart script — force-apply at every login ---
+# XFCE4's xfce4-desktop daemon creates xfconf properties for the actual
+# monitor name when it starts. If that name wasn't in our XML above, it
+# uses its own built-in default. This script runs after xfconfd and
+# xfce4-desktop are both up, enumerates all live monitor properties, and
+# force-sets the wallpaper on each one.
+#
+# KEY FIX: We must handle two cases for each property:
+#   a) Property doesn't exist yet → use -n -t to create it
+#   b) Property already exists (xfce4 created it with default) → use -s alone to update
+# Using -n alone silently fails case (b). The xfset() helper tries both.
+
+AUTOSTART_DIR="/etc/skel/.config/autostart"
+mkdir -p "$AUTOSTART_DIR" "/home/tonix/.config/autostart"
+
+cat > "$AUTOSTART_DIR/tonix-wallpaper.desktop" << 'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Tonix Wallpaper
+Comment=Apply Tonix default wallpaper on XFCE4 session start
+Exec=/usr/local/bin/tonix-set-wallpaper
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+DESKTOP
+
+cp "$AUTOSTART_DIR/tonix-wallpaper.desktop" "/home/tonix/.config/autostart/tonix-wallpaper.desktop"
+chown tonix:tonix "/home/tonix/.config/autostart/tonix-wallpaper.desktop"
+
+cat > /usr/local/bin/tonix-set-wallpaper << 'SCRIPT'
+#!/bin/bash
+# Tonix — force-apply wallpaper at every XFCE4 session start.
+# Runs via autostart AFTER xfconfd and xfce4-desktop are up.
+WALLPAPER="/usr/share/backgrounds/tonix/tonix-sunset.png"
+[[ -f "$WALLPAPER" ]] || exit 0
+command -v xfconf-query &>/dev/null || exit 0
+
+# xfset: create-or-update a single xfconf property.
+# -n -t creates new properties; plain -s updates existing ones.
+# We try create first (fails if exists), then update (works regardless).
+xfset_int()    { local p="$1" v="$2"
+    xfconf-query -c xfce4-desktop -p "$p" -n -t int    -s "$v" 2>/dev/null \
+ || xfconf-query -c xfce4-desktop -p "$p"              -s "$v" 2>/dev/null || true; }
+xfset_string() { local p="$1" v="$2"
+    xfconf-query -c xfce4-desktop -p "$p" -n -t string -s "$v" 2>/dev/null \
+ || xfconf-query -c xfce4-desktop -p "$p"              -s "$v" 2>/dev/null || true; }
+
+# Wait briefly for xfce4-desktop to finish registering all monitor properties
+sleep 1
+
+# Enumerate every monitor xfce4-desktop has registered and force our wallpaper
+for monitor in $(xfconf-query -c xfce4-desktop -l 2>/dev/null \
+        | grep -oP '/backdrop/screen0/monitor[^/]+' | sort -u); do
+    for ws in 0 1 2 3; do
+        base="$monitor/workspace$ws"
+        xfset_int    "$base/color-style"  0
+        xfset_int    "$base/image-style"  5
+        xfset_string "$base/image-path"   "$WALLPAPER"
+        xfset_string "$base/last-image"   "$WALLPAPER"
+    done
+done
+SCRIPT
+chmod +x /usr/local/bin/tonix-set-wallpaper
+
+CHROOT_WALLPAPER
+
+    ok "XFCE4 wallpaper configured (tonix-sunset.png)"
 
     # --- Phase 6: Cleanup and pack ---
     header "Phase 6: Cleanup and packaging"
@@ -546,28 +779,48 @@ cat > /etc/motd << 'EOF_MOTD'
   Firewall active (ufw)        AppArmor enabled
   No swap — RAM only           Root is immutable (overlayfs)
 
-  Start GUI:        startxfce4       (exit: logout from XFCE menu or pkill xfce4-session)
-  Stop GUI:         pkill xfce4-session
+  Start GUI:        startxfce4
   Tor-only mode:    sudo tonix-tormode on|off|status
-  Tor Browser:      tor-browser      (auto-routes via tormode if active)
+  Tor Browser:      tor-browser
   System status:    tonix-status
   WiFi status:      nmcli device status
   Stego tool:       stego --help
   Change password:  passwd
-  Switch to root:   sudo -i          (password: tonix)
+  Switch to root:   sudo -i
 
 EOF_MOTD
 
-# --- LightDM autologin (optional, remove for login prompt) ---
+# --- LightDM config (kept minimal — LightDM is masked at boot) ---
+# These files are present on disk so the package doesn't complain,
+# but LightDM never starts unless the user explicitly runs it.
 mkdir -p /etc/lightdm/lightdm.conf.d
+
 cat > /etc/lightdm/lightdm.conf.d/50-tonix.conf << 'EOF_LDM'
 [Seat:*]
-# Uncomment below for auto-login (less secure):
-# autologin-user=tonix
-# autologin-user-timeout=0
+greeter-session=lightdm-gtk-greeter
+user-session=xfce
 greeter-hide-users=false
 greeter-show-manual-login=true
 EOF_LDM
+
+# --- Console login banner (/etc/issue) ---
+# /etc/issue is printed by agetty BEFORE the "login:" prompt on every tty.
+# We use it to show the Tonix banner and make the prompt context clear.
+# No agetty drop-ins needed — the stock agetty + /etc/issue is rock-solid.
+cat > /etc/issue << 'EOF_ISSUE'
+
+  ████████╗ ██████╗ ███╗   ██╗██╗██╗  ██╗
+     ██╔══╝██╔═══██╗████╗  ██║██║╚██╗██╔╝
+     ██║   ██║   ██║██╔██╗ ██║██║ ╚███╔╝
+     ██║   ██║   ██║██║╚██╗██║██║ ██╔██╗
+     ██║   ╚██████╔╝██║ ╚████║██║██╔╝ ██╗
+     ╚═╝    ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝
+
+  Codename: Mirage  |  \l
+
+  Enter your username at the prompt below.
+
+EOF_ISSUE
 
 # --- Update initramfs ---
 update-initramfs -u -k all 2>/dev/null || update-initramfs -c -k all

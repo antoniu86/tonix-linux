@@ -1,0 +1,10 @@
+# Wallpaper PNG files are excluded from the repository.
+# Add the following files manually before building:
+#   tonix-circuit.png
+#   tonix-sunset.png
+#   tonix-blue.png
+#   tonix-matrix.png
+*.png
+*.jpg
+*.jpeg
+*.svg
