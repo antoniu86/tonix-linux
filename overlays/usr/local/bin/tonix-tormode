@@ -293,48 +293,99 @@ apply_iptables() {
 # When tormode is OFF: re-enable Tor Browser's own Tor client
 # ============================================================================
 configure_torbrowser() {
-    local mode="$1"   # "direct" or "tor"
-    local TB_PROFILE_BASE="/var/lib/tonix-browser/.tor-browser"
-    local PROFILE_DIR
+    local mode="$1"   # "on" or "off"
 
-    # Find the actual profile dir (named randomly under TorBrowser/Data/Browser/)
-    PROFILE_DIR=$(find "$TB_PROFILE_BASE"         -maxdepth 5 -name "prefs.js" 2>/dev/null         | head -1 | xargs dirname 2>/dev/null || true)
+    local TB_INSTALL="/opt/tor-browser"
+    local TB_DATA="$TB_INSTALL/Browser/TorBrowser/Data/Browser"
+    local PROFILE_DIR=""
 
-    # If no existing profile, write to user.js in the default profile location
-    # Tor Browser will apply user.js on next launch even before prefs.js exists
+    # Find the live profile by locating prefs.js inside the installation tree
+    PROFILE_DIR=$(find "$TB_DATA" -maxdepth 3 -name "prefs.js" 2>/dev/null \
+        | head -1 | xargs dirname 2>/dev/null || true)
+
+    # No prefs.js yet — first launch case
     if [[ -z "$PROFILE_DIR" ]]; then
-        PROFILE_DIR="$TB_PROFILE_BASE/tbb/TorBrowser/Data/Browser/profile.default"
+        PROFILE_DIR="$TB_DATA/profile.default"
         mkdir -p "$PROFILE_DIR"
-        chown -R tonix-browser:tonix-browser "$TB_PROFILE_BASE" 2>/dev/null || true
     fi
 
     local USER_JS="$PROFILE_DIR/user.js"
+    local PREFS_JS="$PROFILE_DIR/prefs.js"
 
-    if [[ "$mode" == "direct" ]]; then
-        # tormode ON — transparent proxy handles routing, Tor Browser goes direct
-        cat > "$USER_JS" << 'TBUSERJS'
-// Tonix: tormode is ON — transparent proxy routes all traffic through Tor.
-// Tor Browser's own Tor client is disabled to avoid Tor-over-Tor.
-user_pref("network.proxy.type", 0);
-user_pref("extensions.torbutton.use_nontor_proxy", true);
+    if [[ "$mode" == "on" ]]; then
+        # tormode ON strategy:
+        # Point Tor Browser at the system Tor SOCKS5 proxy (127.0.0.1:9050).
+        # This is better than setting proxy.type=0 (no proxy) because:
+        #   - type=0 makes torbutton think there's no Tor → blocks all pages
+        #     with "Tor connection required" screen
+        #   - SOCKS5 to 9050 = Tor Browser routes through our system Tor daemon,
+        #     torbutton is satisfied, no connect screen
+        # Not Tor-over-Tor: 127.0.0.1 is excluded from the transparent proxy
+        # iptables rules (loopback RETURN rule), so the SOCKS connection to 9050
+        # goes directly to the Tor daemon, not back through TransPort.
+        cat > "$USER_JS" << EOF
+// Tonix tormode ON: route Tor Browser through system Tor SOCKS proxy.
+// The system Tor daemon is already running on 9050 (started by tormode).
+// Loopback is excluded from transparent proxy iptables — no Tor-over-Tor.
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.socks", "127.0.0.1");
+user_pref("network.proxy.socks_port", ${TOR_SOCKS_PORT});
+user_pref("network.proxy.socks_version", 5);
+user_pref("network.proxy.socks_remote_dns", true);
+user_pref("network.proxy.no_proxies_on", "");
 user_pref("extensions.torlauncher.start_tor", false);
 user_pref("extensions.torlauncher.prompt_at_startup", false);
-user_pref("browser.startup.homepage_override.mstone", "ignore");
-TBUSERJS
-        chown tonix-browser:tonix-browser "$USER_JS" 2>/dev/null || true
-        echo -e "${CYAN}Tor Browser configured: direct connection (transparent proxy active)${NC}"
-    else
-        # tormode OFF — Tor Browser should use its own built-in Tor
-        cat > "$USER_JS" << 'TBUSERJS'
-// Tonix: tormode is OFF — Tor Browser uses its own built-in Tor client.
-user_pref("network.proxy.type", 1);
 user_pref("extensions.torbutton.use_nontor_proxy", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+EOF
+
+        # prefs.js overrides user.js for keys already saved there.
+        # Patch it directly so cached values don't win over our settings.
+        if [[ -f "$PREFS_JS" ]]; then
+            local keys=(
+                "network.proxy.type"
+                "network.proxy.socks"
+                "network.proxy.socks_port"
+                "network.proxy.socks_version"
+                "network.proxy.socks_remote_dns"
+                "extensions.torlauncher.start_tor"
+                "extensions.torlauncher.prompt_at_startup"
+                "extensions.torbutton.use_nontor_proxy"
+            )
+            for key in "${keys[@]}"; do
+                sed -i "/user_pref(\"${key}\",/d" "$PREFS_JS"
+            done
+        fi
+
+        echo -e "${CYAN}Tor Browser: SOCKS5 → 127.0.0.1:${TOR_SOCKS_PORT} (system Tor)${NC}"
+
+    else
+        # tormode OFF — restore Tor Browser's own internal Tor client
+        cat > "$USER_JS" << 'EOF'
+// Tonix tormode OFF: Tor Browser uses its own built-in Tor client.
+user_pref("network.proxy.type", 1);
 user_pref("extensions.torlauncher.start_tor", true);
 user_pref("extensions.torlauncher.prompt_at_startup", true);
-TBUSERJS
-        chown tonix-browser:tonix-browser "$USER_JS" 2>/dev/null || true
-        echo -e "${CYAN}Tor Browser configured: using built-in Tor client${NC}"
+user_pref("extensions.torbutton.use_nontor_proxy", false);
+EOF
+
+        if [[ -f "$PREFS_JS" ]]; then
+            local keys=(
+                "network.proxy.socks"
+                "network.proxy.socks_port"
+                "extensions.torlauncher.start_tor"
+                "extensions.torlauncher.prompt_at_startup"
+                "extensions.torbutton.use_nontor_proxy"
+            )
+            for key in "${keys[@]}"; do
+                sed -i "/user_pref(\"${key}\",/d" "$PREFS_JS"
+            done
+        fi
+
+        echo -e "${CYAN}Tor Browser: using built-in Tor client${NC}"
     fi
+
+    chown -R tonix-browser:tonix-browser "$TB_DATA" 2>/dev/null || true
 }
 
 # ============================================================================
@@ -381,7 +432,7 @@ tor_on() {
     apply_iptables
 
     # Configure Tor Browser to use direct connection (transparent proxy handles Tor routing)
-    configure_torbrowser "direct"
+    configure_torbrowser "on"
 
     echo "on" > "$STATE_FILE"
 
@@ -434,7 +485,7 @@ tor_off() {
     ufw --force enable  2>/dev/null || true
 
     # Restore Tor Browser to use its own built-in Tor client
-    configure_torbrowser "tor"
+    configure_torbrowser "off"
 
     echo "off" > "$STATE_FILE"
 
