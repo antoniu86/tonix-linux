@@ -139,26 +139,38 @@
                 Persistent /home partition secured via LUKS2 (AES-512-XTS). Survives OS rebuilds and upgrades.
             </div>
             <div class="feature-item">
-                <strong>[+] Tor-Only Mode</strong><br>
-                Toggle forces all network traffic through Tor via iptables, blocking direct access and disabling IPv6.
+                <strong>[+] Tor-Only & Browser</strong><br>
+                Toggle forces all network traffic through Tor via iptables. Includes pre-installed Tor Browser running as an isolated sandboxed user.
             </div>
             <div class="feature-item">
                 <strong>[+] Hardware Spoofing</strong><br>
-                Early MAC address randomization triggers before NetworkManager starts. RAM wiped on shutdown.
+                Early MAC address randomization triggers before NetworkManager starts.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Anti-Forensics</strong><br>
+                Active RAM wiping on shutdown (sdmem + cache flush) and disabled swap prevents sensitive data from leaking to disk.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Dynamic User Setup</strong><br>
+                No hardcoded credentials. Usernames and passwords are set dynamically during the installation wizard.
             </div>
         </div>
 
-        <h2>Deployment</h2>
+        <h2>Deployment & Caching</h2>
         <div class="code-block">
-            <span class="prompt">sudo ./tonix.sh build</span><br>
-            <span class="prompt">sudo ./tonix.sh install /dev/sdX</span>
+            <span class="prompt">sudo ./tonix.sh build</span> <span style="color: #666;"># Uses cache (15-25 min)</span><br>
+            <span class="prompt">sudo ./tonix.sh --refresh build</span> <span style="color: #666;"># Force fresh packages</span><br>
+            <span class="prompt">sudo ./tonix.sh install /dev/sdX</span> <span style="color: #666;"># Install to USB</span><br>
+            <span class="prompt">sudo ./tonix.sh iso</span> <span style="color: #666;"># Build installer ISO</span>
         </div>
 
         <h2>Tactical Toolkit</h2>
         <ul>
             <li><strong>Steganography:</strong> Custom built-in <code>stego</code> command to hide/extract encrypted data within media files.</li>
-            <li><strong>WiFi Auditing:</strong> Native support for Alfa adapters (AWUS036ACM, AWUS1900) + pre-installed kismet, bettercap, and aircrack-ng.</li>
-            <li><strong>Boot Modes:</strong> Immutable (Default), Persistent Root (Writable), RAM Only, and Recovery.</li>
+            <li><strong>WiFi Auditing:</strong> Native support for Alfa adapters (AWUS036ACM, AWUS036AXML, AWUS1900) + aircrack-ng, kismet, wireshark, bettercap, and mdk4.</li>
+            <li><strong>Python Security:</strong> Pre-installed toolkit including scapy, impacket, volatility3, and pwntools.</li>
+            <li><strong>Desktop Environment:</strong> Boots to CLI for stealth. Type <code>startxfce4</code> to launch the lightweight XFCE GUI.</li>
+            <li><strong>Boot Modes:</strong> Immutable (Default), Persistent Root (Writable), RAM Only (Max Privacy), and Recovery. Dual boot support for BIOS and UEFI.</li>
         </ul>
 
         <p style="margin-top: 40px; text-align: center;">
