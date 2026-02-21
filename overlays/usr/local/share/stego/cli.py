@@ -1,263 +1,279 @@
 #!/usr/bin/env python3
 """
 Steganography CLI
-Command-line interface for hiding, showing, and scanning encrypted data in files.
+Command-line interface for hiding, showing, and scanning encrypted data
 """
 
 import sys
-import os
 import argparse
 import getpass
-import itertools
-import threading
-import time
 from pathlib import Path
 
-# Import from same directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core import StegoCore, StegoError
 
 
+# ANSI color codes for terminal output
 class Colors:
-    """ANSI color codes"""
-    RED = '\033[0;31m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[1;33m'
-    BLUE = '\033[0;36m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
     BOLD = '\033[1m'
-    NC = '\033[0m'
+    RESET = '\033[0m'
 
     @classmethod
     def disable(cls):
-        cls.RED = cls.GREEN = cls.YELLOW = cls.BLUE = cls.BOLD = cls.NC = ''
+        """Disable colors for non-TTY output"""
+        cls.RED = cls.GREEN = cls.YELLOW = cls.BLUE = cls.BOLD = cls.RESET = ''
 
 
-class Spinner:
-    """Animated spinner for progress feedback"""
-    def __init__(self):
-        self._spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
-        self._running = False
-        self._thread = None
-        self._message = ""
-
-    def start(self, message=""):
-        self._message = message
-        self._running = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-
-    def _spin(self):
-        while self._running:
-            sys.stdout.write(f'\r{next(self._spinner)} {self._message}')
-            sys.stdout.flush()
-            time.sleep(0.1)
-
-    def update(self, message):
-        self._message = message
-
-    def stop(self, final_message=None):
-        self._running = False
-        if self._thread:
-            self._thread.join()
-        if final_message:
-            sys.stdout.write(f'\r{Colors.GREEN}✓{Colors.NC} {final_message}\n')
-        else:
-            sys.stdout.write('\r')
-        sys.stdout.flush()
-
-
-def format_size(size_bytes):
-    """Format byte size to human readable string"""
+def format_size(size_bytes: int) -> str:
+    """Format bytes to human-readable size"""
     for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
+        if size_bytes < 1024.0:
             return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
+        size_bytes /= 1024.0
     return f"{size_bytes:.1f} TB"
 
 
+def print_warning_box():
+    """Print critical warning about file modification"""
+    c = Colors
+
+    print(f"\n{c.RED}{c.BOLD}{'━' * 60}{c.RESET}")
+    print(f"{c.RED}{c.BOLD}⚠️  CRITICAL WARNING{c.RESET}")
+    print(f"{c.RED}{c.BOLD}{'━' * 60}{c.RESET}\n")
+
+    print(f"  {c.BOLD}DO NOT modify the output file or hidden data will be lost!{c.RESET}\n")
+
+    print(f"  {c.RED}UNSAFE operations (will destroy hidden data):{c.RESET}")
+    print(f"    ✗ Opening in image editors (Photoshop, GIMP, etc.)")
+    print(f"    ✗ Compressing or optimizing the file")
+    print(f"    ✗ Converting to another format")
+    print(f"    ✗ Uploading to social media (auto-optimizes)")
+    print(f"    ✗ Emailing (may compress attachments)")
+    print(f"    ✗ Re-saving in any program\n")
+
+    print(f"  {c.GREEN}SAFE operations (preserves hidden data):{c.RESET}")
+    print(f"    ✓ Copy/move the file as-is (cp, mv, Ctrl+C)")
+    print(f"    ✓ View without saving changes")
+    print(f"    ✓ Transfer via USB/direct file copy")
+    print(f"    ✓ Verify with: stego scan <file>\n")
+
+    print(f"{c.RED}{c.BOLD}{'━' * 60}{c.RESET}\n")
+
+
 def hide_command(args):
-    """Execute hide command"""
+    """Handle hide command"""
     core = StegoCore()
-    base_folder = args.folder.resolve()
-    data_dir = base_folder / 'data'
-    original_dir = base_folder / 'original'
 
-    if not data_dir.exists():
-        print(f"{Colors.RED}Error: data/ folder not found in {base_folder}{Colors.NC}")
-        return 1
-    if not original_dir.exists():
-        print(f"{Colors.RED}Error: original/ folder not found in {base_folder}{Colors.NC}")
+    carrier_file = args.carrier
+    data_path = args.data
+
+    if not carrier_file.is_file():
+        print(f"Error: Carrier file not found: {carrier_file}", file=sys.stderr)
         return 1
 
-    carrier_files = [f for f in original_dir.iterdir() if f.is_file()]
-    if not carrier_files:
-        print(f"{Colors.RED}Error: No carrier file found in {original_dir}{Colors.NC}")
-        return 1
-    if len(carrier_files) > 1:
-        print(f"{Colors.RED}Error: Multiple files in {original_dir}. Keep only one carrier file.{Colors.NC}")
+    if not data_path.exists():
+        print(f"Error: Data path not found: {data_path}", file=sys.stderr)
         return 1
 
-    carrier_file = carrier_files[0]
-    password = args.password or getpass.getpass('Enter encryption password: ')
-    if not password:
-        print("Error: Password cannot be empty")
-        return 1
+    if args.verbose:
+        print(f"[*] Carrier file: {carrier_file}")
+        print(f"[*] Data: {data_path}")
 
-    # Confirm password
-    if not args.password:
-        confirm = getpass.getpass('Confirm password: ')
-        if password != confirm:
-            print(f"{Colors.RED}Error: Passwords don't match{Colors.NC}")
+    # Get password
+    if args.password:
+        password = args.password
+        print("Warning: Password specified on command line (insecure!)", file=sys.stderr)
+    else:
+        password = getpass.getpass('Enter encryption password: ')
+        if not password:
+            print("Error: Password cannot be empty", file=sys.stderr)
             return 1
-
-    spinner = Spinner()
+        confirm = getpass.getpass('Confirm encryption password: ')
+        if password != confirm:
+            print("Error: Passwords do not match", file=sys.stderr)
+            return 1
 
     def progress(step, message):
         if args.verbose:
             print(f"[*] {message}")
-        else:
-            spinner.update(message)
-
-    if not args.verbose:
-        spinner.start("Starting...")
 
     try:
+        if args.verbose:
+            print(f"[*] Hiding data...")
+
         stats = core.hide_data(
-            data_folder=data_dir,
+            data_path=data_path,
             carrier_file=carrier_file,
-            output_file=args.output.resolve(),
+            output_file=args.output,
             password=password,
-            progress_callback=progress
+            progress_callback=progress if args.verbose else None
         )
 
-        if not args.verbose:
-            spinner.stop("Done!")
+        print(f"\n{Colors.GREEN}[+] Data successfully hidden in: {args.output}{Colors.RESET}")
 
-        print(f"\n{Colors.GREEN}{Colors.BOLD}Data hidden successfully!{Colors.NC}")
-        print(f"  Carrier:   {carrier_file.name} ({format_size(stats['carrier_size'])})")
-        print(f"  Hidden:    {format_size(stats['archive_size'])} → {format_size(stats['encrypted_size'])} encrypted")
-        print(f"  Output:    {args.output} ({format_size(stats['output_size'])})")
-        print()
+        print_warning_box()
+
+        print(f"Details:")
+        print(f"  Original carrier size: {format_size(stats['carrier_size'])}")
+        print(f"  Hidden data size: {format_size(stats['hidden_size'])}")
+        print(f"  Final file size: {format_size(stats['output_size'])}")
+        print(f"  Files hidden: {stats['files_count']}\n")
+
+        print(f"{Colors.YELLOW}Keep your password safe - you'll need it to extract the data!{Colors.RESET}\n")
 
         return 0
 
     except StegoError as e:
-        if not args.verbose:
-            spinner.stop()
-        print(f"{Colors.RED}Error: {e}{Colors.NC}")
+        print(f"{Colors.RED}Error: {e}{Colors.RESET}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"{Colors.RED}Unexpected error: {e}{Colors.RESET}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
         return 1
 
 
 def show_command(args):
-    """Execute show command"""
+    """Handle show command"""
     core = StegoCore()
-    password = args.password or getpass.getpass('Enter decryption password: ')
-    if not password:
-        print("Error: Password cannot be empty")
+
+    if not args.file.exists():
+        print(f"Error: File not found: {args.file}", file=sys.stderr)
         return 1
 
-    spinner = Spinner()
+    if args.verbose:
+        print(f"[*] Input file: {args.file}")
+        print(f"[*] Output folder: {args.output}")
+
+    # Get password
+    if args.password:
+        password = args.password
+        print("Warning: Password specified on command line (insecure!)", file=sys.stderr)
+    else:
+        password = getpass.getpass('Enter decryption password: ')
+        if not password:
+            print("Error: Password cannot be empty", file=sys.stderr)
+            return 1
 
     def progress(step, message):
         if args.verbose:
             print(f"[*] {message}")
-        else:
-            spinner.update(message)
-
-    if not args.verbose:
-        spinner.start("Starting...")
 
     try:
         stats = core.show_data(
-            input_file=args.file.resolve(),
-            output_folder=args.output.resolve(),
+            input_file=args.file,
+            output_folder=args.output,
             password=password,
-            progress_callback=progress
+            progress_callback=progress if args.verbose else None
         )
 
-        if not args.verbose:
-            spinner.stop("Done!")
+        print(f"\n{Colors.GREEN}[+] Data successfully extracted to: {args.output}{Colors.RESET}\n")
 
-        print(f"\n{Colors.GREEN}{Colors.BOLD}Data extracted successfully!{Colors.NC}")
-        print(f"  Original:  {stats['original_file']} ({format_size(stats['original_size'])})")
-        print(f"  Extracted:  {stats['output_folder']}")
-        print(f"    data/       Your hidden files")
-        print(f"    original/   Clean carrier file")
-        print()
+        print(f"Details:")
+        print(f"  Original filename: {stats['original_filename']}")
+        print(f"  Original file size: {format_size(stats['original_size'])}")
+        print(f"  Hidden data size: {format_size(stats['hidden_size'])}")
+        print(f"  Files extracted: {stats['files_count']}\n")
+
+        print(f"Extracted structure:")
+        print(f"  {args.output}/")
+        print(f"  ├── data/       (your hidden files)")
+        print(f"  └── original/   (clean carrier file)\n")
 
         return 0
 
     except StegoError as e:
-        if not args.verbose:
-            spinner.stop()
-        print(f"{Colors.RED}Error: {e}{Colors.NC}")
+        print(f"{Colors.RED}Error: {e}{Colors.RESET}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"{Colors.RED}Unexpected error: {e}{Colors.RESET}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
         return 1
 
 
 def scan_command(args):
-    """Execute scan command"""
+    """Handle scan command"""
     core = StegoCore()
-    path = args.path.resolve()
 
-    def progress(current, message):
-        if args.verbose:
-            print(f"[*] {message}")
+    if not args.path.exists():
+        print(f"Error: Path not found: {args.path}", file=sys.stderr)
+        return 1
+
+    print(f"[*] Scanning {'recursively ' if args.recursive else ''}{args.path}...\n")
+
+    def progress(current, total):
+        if not args.verbose:
+            percent = int((current / total) * 100)
+            bar_length = 30
+            filled = int((current / total) * bar_length)
+            bar = '█' * filled + '░' * (bar_length - filled)
+            sys.stdout.write(f'\rScanning: [{bar}] {percent}%')
+            sys.stdout.flush()
 
     try:
-        results = core.scan_path(
-            path=path,
+        results = core.scan_files(
+            path=args.path,
             recursive=args.recursive,
-            include_hidden=getattr(args, 'all', False),
-            progress_callback=progress
+            include_hidden=args.all,
+            progress_callback=progress if not args.verbose else None
         )
 
-        found_count = len(results)
+        if not args.verbose:
+            print()  # new line after progress bar
 
-        if not results:
-            print(f"\n{Colors.BLUE}[*] No hidden data found{Colors.NC}\n")
-            return 0
-
-        print()
+        found_count = 0
         for result in results:
-            print(f"{Colors.GREEN}[+] Hidden data found in: {result['file']}{Colors.NC}")
-            if args.verbose:
-                print(f"    Position:     {result['marker_position']}")
-                print(f"    Version:      {result['version']}")
-                print(f"    Original:     {result['original_filename']}")
-                print(f"    Hidden size:  {format_size(result['hidden_size'])}")
-                print(f"    File size:    {format_size(result['file_size'])}")
+            if result['has_hidden_data']:
+                found_count += 1
+                print(f"\n{Colors.YELLOW}[!] Hidden data found in: {result['file']}{Colors.RESET}")
 
-        print(f"\n{Colors.BLUE}[*] Scan complete: {found_count} file(s) contain hidden data{Colors.NC}\n")
+                if args.verbose:
+                    print(f"    Position: {result['marker_position']}")
+                    print(f"    Version: {result['version']}")
+                    print(f"    Original filename: {result['original_filename']}")
+                    print(f"    Hidden data size: {format_size(result['hidden_size'])}")
+                    print(f"    File size: {format_size(result['file_size'])}")
+            elif args.verbose:
+                print(f"[*] Scanning: {result['file']}")
+
+        print(f"\n{Colors.BLUE}[*] Scan complete: {found_count}/{len(results)} file(s) contain hidden data{Colors.RESET}\n")
 
         return 0
 
-    except StegoError as e:
-        print(f"{Colors.RED}Error: {e}{Colors.NC}")
+    except Exception as e:
+        print(f"{Colors.RED}Error: {e}{Colors.RESET}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
         return 1
 
 
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
-        description='Steganography tool — hide encrypted data in any file type',
+        description='Steganography tool - hide encrypted data in files',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   Hide data:
-    stego hide /path/to/folder -o output.jpg
+    stego hide photo.jpg secret.txt -o hidden.jpg
+    stego hide photo.jpg secrets/ -o hidden.jpg
 
-  Show data:
-    stego show hidden_file.jpg -o /path/to/output
+  Extract data:
+    stego show hidden.jpg -o recovered/
 
   Scan files:
-    stego scan /path/to/files -r -v
-    stego scan image.png
-
-For GUI interface, run: stego-gui
+    stego scan hidden.jpg
+    stego scan ~/Downloads -r -v
         """
     )
 
-    # Disable colors if not a TTY
     if not sys.stdout.isatty():
         Colors.disable()
 
@@ -265,35 +281,30 @@ For GUI interface, run: stego-gui
 
     # Hide command
     hide_parser = subparsers.add_parser('hide',
-        help='Hide encrypted data in a file',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="""Hide encrypted data in a carrier file.
+                                        help='Hide encrypted data in a carrier file',
+                                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                                        description="""Hide encrypted data in a carrier file.
 
-Required folder structure:
-  your_folder/
-  ├── data/        Files you want to hide (can contain subdirectories)
-  └── original/    ONE carrier file (image, video, document, etc.)
-
-Example:
-  mkdir -p project/data project/original
-  cp secret.txt project/data/
-  cp photo.jpg project/original/
-  stego hide project -o hidden.jpg
+Examples:
+  stego hide photo.jpg secret.txt -o hidden.jpg
+  stego hide photo.jpg secrets/ -o hidden.jpg
 """)
-    hide_parser.add_argument('folder', type=Path,
-        help='Folder containing data/ and original/ subdirectories')
+    hide_parser.add_argument('carrier', type=Path,
+                             help='Carrier file (image, video, PDF, etc.)')
+    hide_parser.add_argument('data', type=Path,
+                             help='File or folder to hide')
     hide_parser.add_argument('-o', '--output', type=Path, required=True,
-        help='Output file path')
+                             help='Output file path')
     hide_parser.add_argument('-p', '--password', type=str,
-        help='Encryption password (will prompt if not provided)')
+                             help='Encryption password (will prompt if not provided)')
     hide_parser.add_argument('-v', '--verbose', action='store_true',
-        help='Verbose output')
+                             help='Verbose output')
 
     # Show command
     show_parser = subparsers.add_parser('show',
-        help='Extract hidden data from a file',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="""Extract hidden data from a carrier file.
+                                        help='Extract hidden data from a file',
+                                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                                        description="""Extract hidden data from a carrier file.
 
 Creates folder structure:
   output_folder/
@@ -304,25 +315,25 @@ Example:
   stego show hidden.jpg -o extracted_folder
 """)
     show_parser.add_argument('file', type=Path,
-        help='File containing hidden data')
+                             help='File containing hidden data')
     show_parser.add_argument('-o', '--output', type=Path, required=True,
-        help='Output folder path')
+                             help='Output folder path')
     show_parser.add_argument('-p', '--password', type=str,
-        help='Decryption password (will prompt if not provided)')
+                             help='Decryption password (will prompt if not provided)')
     show_parser.add_argument('-v', '--verbose', action='store_true',
-        help='Verbose output')
+                             help='Verbose output')
 
     # Scan command
     scan_parser = subparsers.add_parser('scan',
-        help='Scan files for hidden data')
+                                        help='Scan files for hidden data')
     scan_parser.add_argument('path', type=Path,
-        help='File or directory to scan')
+                             help='File or directory to scan')
     scan_parser.add_argument('-r', '--recursive', action='store_true',
-        help='Scan subdirectories recursively')
+                             help='Scan subdirectories recursively')
     scan_parser.add_argument('-a', '--all', action='store_true',
-        help='Include hidden files (starting with .)')
+                             help='Include hidden files (starting with .)')
     scan_parser.add_argument('-v', '--verbose', action='store_true',
-        help='Verbose output')
+                             help='Verbose output')
 
     args = parser.parse_args()
 
@@ -330,22 +341,12 @@ Example:
         parser.print_help()
         return 1
 
-    try:
-        if args.command == 'hide':
-            return hide_command(args)
-        elif args.command == 'show':
-            return show_command(args)
-        elif args.command == 'scan':
-            return scan_command(args)
-    except KeyboardInterrupt:
-        print("\nAborted by user")
-        return 130
-    except Exception as e:
-        print(f"{Colors.RED}Unexpected error: {e}{Colors.NC}", file=sys.stderr)
-        if hasattr(args, 'verbose') and args.verbose:
-            import traceback
-            traceback.print_exc()
-        return 1
+    if args.command == 'hide':
+        return hide_command(args)
+    elif args.command == 'show':
+        return show_command(args)
+    elif args.command == 'scan':
+        return scan_command(args)
 
     return 0
 
