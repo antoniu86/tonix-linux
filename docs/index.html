@@ -62,7 +62,6 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0; }
         }
-        /* Moved .hidden here with !important so it always overrides everything */
         .hidden { display: none !important; }
 
         h2 {
@@ -163,6 +162,14 @@
             <span class="prompt">sudo ./tonix.sh install /dev/sdX</span> <span style="color: #666;"># Install to USB</span><br>
             <span class="prompt">sudo ./tonix.sh iso</span> <span style="color: #666;"># Build installer ISO</span>
         </div>
+
+        <h2>Virtual Machine Testing</h2>
+        <div class="code-block">
+            <span class="prompt">sudo ./tonix.sh vm-test iso-with-disk</span> <span style="color: #666;"># Boot ISO & attach virtual disk</span><br>
+            <span class="prompt">sudo ./tonix.sh vm-test disk</span> <span style="color: #666;"># Boot installed VM disk (UEFI)</span><br>
+            <span class="prompt">sudo ./tonix.sh vm-test disk-bios</span> <span style="color: #666;"># Boot installed VM disk (Legacy BIOS)</span>
+        </div>
+        <p>Test your builds instantly using QEMU/KVM without writing to a physical USB drive. Inside the live ISO environment, run <code>install-tonix</code> and enter <code>vda</code> as the target device to simulate an installation.</p>
 
         <h2>Tactical Toolkit</h2>
         <ul>
