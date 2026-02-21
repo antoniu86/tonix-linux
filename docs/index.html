@@ -186,7 +186,7 @@
     </div>
 </div>
 
-<footer style="text-align: center; padding: 20px; color: var(--term-dim); font-family: 'Courier New', Courier, monospace; font-size: 0.85rem;">
+<footer id="site-footer" class="hidden" style="text-align: center; padding: 20px; color: var(--term-dim); font-family: 'Courier New', Courier, monospace; font-size: 0.85rem;">
     Created by <a href="https://www.temian.ro" target="_blank">antoniu</a>
 </footer>
 
@@ -270,6 +270,7 @@
                 bootDiv.classList.add("hidden");
                 cursor.remove(); // This completely deletes the cursor element!
                 mainContent.classList.remove("hidden");
+                document.getElementById("site-footer").classList.remove("hidden");
             }, 500);
         }
     }
