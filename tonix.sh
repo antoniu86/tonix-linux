@@ -623,7 +623,12 @@ CHROOT_CLEAN
     local tarball="$OUTPUT_DIR/tonix-${OS_VERSION}.tar.gz"
 
     info "Creating tarball (this takes a few minutes)..."
-    tar -czf "$tarball" -C "$CHROOT_DIR" .
+    tar -czf "$tarball" -C "$CHROOT_DIR" \
+        --exclude='./proc/*' \
+        --exclude='./sys/*' \
+        --exclude='./dev/*' \
+        --exclude='./run/*' \
+        .
 
     local size
     size=$(du -h "$tarball" | cut -f1)
