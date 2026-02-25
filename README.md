@@ -15,9 +15,27 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Dual boot support** — BIOS (legacy) + UEFI (32-bit and 64-bit)
 - **XFCE desktop** — Lightweight GUI with custom Tonix wallpapers (boots to CLI by default)
 - **Alfa WiFi support** — Auto-detects AWUS036ACM, AWUS036AXML, AWUS1900
-- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4
+- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4, wifite, hcxdumptool, cowpatty
+- **Penetration testing** — nikto, sqlmap, gobuster, dirb, wfuzz, whatweb, hydra, medusa, radare2, nasm, gdb
+- **OSINT & reconnaissance** — theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry
+- **Windows/SMB/AD** — enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw
+- **MITM & traffic interception** — mitmproxy, sslsplit, ettercap, dsniff
+- **Wordlist generation** — crunch, cewl for custom and pattern-based wordlists
+- **File cracking** — fcrackzip, pdfcrack, ophcrack, exploitdb (searchsploit)
+- **SNMP enumeration** — snmp, onesixtyone
+- **Encryption toolkit** — gocryptfs, encfs, ccrypt, git-crypt, ssss (Shamir's Secret Sharing)
+- **Hardware token support** — YubiKey, smart card, PIV via pcscd, opensc, scdaemon
+- **SDR / radio** — rtl-sdr, Ubertooth for Bluetooth LE sniffing alongside Kismet
+- **VPN support** — OpenVPN + WireGuard pre-installed
+- **DNS encryption** — dnscrypt-proxy encrypts DNS queries, no leaks
+- **Proxy routing** — proxychains4 routes any app through Tor/SOCKS
+- **Tunneling** — iodine (DNS tunnel), proxytunnel (HTTP/S proxy tunnel)
+- **Rootkit & integrity** — rkhunter, chkrootkit, lynis, aide, auditd
+- **Enhanced forensics** — sleuthkit, dc3dd, gddrescue for disk imaging and recovery
+- **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, zsh with autosuggestions
+- **System monitoring** — iotop, iftop, nethogs, sysstat, lm-sensors
 - **Built-in steganography** — `stego` command for hiding encrypted data in files
-- **Python security toolkit** — scapy, impacket, volatility3, pwntools pre-installed
+- **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r pre-installed
 - **Fast rebuilds** — Package cache makes subsequent builds 3-4x faster (15-25 min)
 - **RAM wiping** — Clears sensitive data from memory on shutdown
 - **No swap** — Prevents sensitive data from leaking to disk
@@ -59,7 +77,7 @@ sudo ./tonix.sh --refresh build    # Force fresh packages (45-60 min)
 32GB USB Drive:
 +------+----------+----------------------------+--------------------------+
 | BIOS | /boot    | /  (root)                  | /home                    |
-| 1MB  | 512MB    | 10GB, ext4                 | remaining, LUKS2         |
+| 1MB  | 512MB    | 15GB, ext4                 | remaining, LUKS2         |
 | grub | FAT32    | read-only via overlayfs    | encrypted, persistent    |
 |      | UEFI ESP | tmpfs overlay (RAM)        | your data survives here  |
 +------+----------+----------------------------+--------------------------+
@@ -186,6 +204,28 @@ tonix/
 └── output/                         (generated, final tarballs and ISOs)
 ```
 
+## Penetration Testing Tools
+
+Pre-installed toolkit beyond WiFi auditing:
+
+| Category | Tools |
+|----------|-------|
+| Web scanning | nikto, dirb, gobuster, wfuzz, whatweb |
+| Web exploitation | sqlmap, mitmproxy, sslsplit |
+| Login brute-forcing | hydra, medusa |
+| File cracking | fcrackzip, pdfcrack, ophcrack |
+| Wordlist generation | crunch, cewl |
+| Password cracking | hashcat, john, cowpatty |
+| SNMP enumeration | snmp, onesixtyone |
+| OSINT & recon | theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry |
+| Windows / SMB / AD | enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw |
+| Reverse engineering | radare2, nasm, gdb |
+| Proxy & tunneling | proxychains4, iodine, proxytunnel, sshpass |
+| Network testing | iperf3, sshuttle, mtr |
+| Packet analysis | wireshark, tshark, tcpdump, ettercap |
+| Exploit database | exploitdb (searchsploit) |
+| SDR / radio | rtl-sdr, ubertooth |
+
 ## Tails-Inspired Security
 
 | Feature | Tails | Tonix |
@@ -197,6 +237,9 @@ tonix/
 | RAM wipe on shutdown | Custom kernel patch | sdmem + cache flush (userspace) |
 | Encrypted persistence | Opt-in, limited dirs | Always-on encrypted /home |
 | Writable mode | Not available | Boot option for maintenance |
+| VPN support | Not built-in | OpenVPN + WireGuard pre-installed |
+| DNS encryption | Custom setup | dnscrypt-proxy pre-installed |
+| Rootkit detection | Not included | rkhunter + chkrootkit |
 | Custom software | Requires rebuild | Temporarily via apt, or rebuild |
 
 ## WiFi Adapter Support
@@ -210,8 +253,8 @@ tonix/
 ## Build Requirements
 
 - Debian/Ubuntu host system (Linux only)
-- ~15-20GB free disk space (includes 2-4GB package cache)
-- Internet connection (~2-4GB download for first build)
+- ~25-30GB free disk space (15GB root image + 2-4GB package cache + build overhead)
+- Internet connection (~4-6GB download for first build)
 - Root access
 - Wallpaper PNGs placed in `resources/wallpapers/` before building (see Project Structure above)
 

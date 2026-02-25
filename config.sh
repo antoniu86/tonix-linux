@@ -18,7 +18,7 @@ DEBIAN_MIRROR="http://deb.debian.org/debian/"
 
 # Partition sizes (in MiB)
 BOOT_SIZE_MIB=512
-ROOT_SIZE_MIB=10240  # 10GB
+ROOT_SIZE_MIB=15360  # 15GB
 # HOME gets everything remaining
 
 # Architecture support
@@ -70,6 +70,19 @@ PACKAGES_ENCRYPTION=(
     keepassxc
     age
     paperkey
+    openssl
+    gocryptfs
+    encfs
+    ccrypt
+    git-crypt
+    ssss
+    pwgen
+    apg
+    signify-openbsd
+    pcscd
+    opensc
+    scdaemon
+    yubikey-manager
 )
 
 # --- Desktop (XFCE) ---
@@ -89,6 +102,9 @@ PACKAGES_DESKTOP=(
     ristretto
     mousepad
     file-roller
+    xfce4-clipman-plugin
+    redshift-gtk
+    catfish
 )
 
 # --- Firmware (broad hardware compatibility) ---
@@ -121,6 +137,10 @@ PACKAGES_NETWORKING=(
 PACKAGES_PRIVACY=(
     tor
     torsocks
+    proxychains4
+    dnscrypt-proxy
+    openvpn
+    wireguard-tools
     ufw
     firejail
     macchanger
@@ -131,6 +151,12 @@ PACKAGES_PRIVACY=(
     apparmor
     apparmor-profiles
     apparmor-utils
+    rkhunter
+    chkrootkit
+    lynis
+    aide
+    auditd
+    pass
 )
 
 # --- Browsers ---
@@ -141,6 +167,7 @@ PACKAGES_BROWSERS=(
 # --- Editors & Terminal ---
 PACKAGES_EDITORS=(
     vim
+    neovim
     nano
     mc
     tmux
@@ -153,6 +180,15 @@ PACKAGES_EDITORS=(
     tree
     ncdu
     ranger
+    fzf
+    ripgrep
+    bat
+    fd-find
+    exa
+    tldr
+    zsh
+    zsh-autosuggestions
+    zsh-syntax-highlighting
 )
 
 # --- File & Archive Tools ---
@@ -163,6 +199,8 @@ PACKAGES_FILES=(
     gzip
     bzip2
     xz-utils
+    zstd
+    lz4
     p7zip-full
     unrar-free
 )
@@ -178,6 +216,14 @@ PACKAGES_NETTOOLS=(
     netcat-openbsd
     socat
     aria2
+    iperf3
+    sshuttle
+    mtr
+    sshfs
+    stunnel4
+    iodine
+    proxytunnel
+    sshpass
 )
 
 # --- Development (lightweight) ---
@@ -189,7 +235,10 @@ PACKAGES_DEV=(
     python3-venv
     ruby
     jq
+    yq
+    xmlstarlet
     sqlite3
+    ltrace
     dkms
     linux-headers-amd64
     linux-compiler-gcc-12-x86
@@ -223,6 +272,11 @@ PACKAGES_SYSUTIL=(
     testdisk
     pv
     dialog
+    iotop
+    iftop
+    nethogs
+    sysstat
+    lm-sensors
 )
 
 # --- Steganography, Forensics & Dependencies ---
@@ -238,6 +292,9 @@ PACKAGES_STEGO=(
     foremost
     hexedit
     xxd
+    sleuthkit
+    dc3dd
+    gddrescue
 
     # Python dependencies for your stego-gui app
     python3-tk
@@ -246,17 +303,27 @@ PACKAGES_STEGO=(
     python3-pil.imagetk
 )
 
-# --- Alfa WiFi USB Adapters ---
+# --- Alfa WiFi USB Adapters & SDR Hardware ---
 # AWUS036ACM  → mt76x2u   (in-kernel, needs firmware-mediatek)
 # AWUS036AXML → mt7921u   (in-kernel since 5.18, needs firmware-mediatek)
 # AWUS1900    → rtl8814au (out-of-tree, needs DKMS build)
 PACKAGES_WIFI_EXTRA=(
     # firmware-mediatek, dkms, linux-headers-amd64 already in other arrays
     # rtl8814au driver will be built from source in the build script
+
+    # SDR hardware support
+    rtl-sdr
+    ubertooth
 )
 
 # RTL8814AU driver for AWUS1900
 RTL8814AU_REPO="https://github.com/aircrack-ng/rtl8814au.git"
+
+# --- Tor Browser ---
+TOR_VERSION="15.0.7"
+TOR_ARCH="linux-x86_64"
+TOR_DIR="/opt/tor-browser"
+TOR_URL="https://dist.torproject.org/torbrowser/${TOR_VERSION}/tor-browser-${TOR_ARCH}-${TOR_VERSION}.tar.xz"
 
 # --- WiFi Security & Penetration Testing ---
 # Auditing, rogue AP detection, deauth testing, traffic analysis
@@ -283,12 +350,10 @@ PACKAGES_WIFI_SECURITY=(
     suricata
     fail2ban
 
-    # # DNS protection
-    # dnscrypt-proxy
-
     # Password & hash testing (WPA handshake cracking)
     hashcat
     john
+    cowpatty
 
     # WPA/PMKID capture tools
     hcxdumptool
@@ -307,6 +372,62 @@ PACKAGES_WIFI_SECURITY=(
     libnl-3-200
     libnl-genl-3-200
     libpcap0.8
+)
+
+# --- Penetration Testing (web, login, reverse engineering) ---
+PACKAGES_PENTEST=(
+    # Web scanning & exploitation
+    nikto
+    sqlmap
+    gobuster
+    dirb
+    whatweb
+    wfuzz
+    mitmproxy
+    sslsplit
+
+    # Login & file brute-forcing
+    hydra
+    medusa
+    fcrackzip
+    pdfcrack
+    ophcrack
+
+    # Wordlist generation
+    crunch
+    cewl
+
+    # SNMP enumeration
+    snmp
+    onesixtyone
+
+    # Exploit database
+    exploitdb
+
+    # Reverse engineering & binary analysis
+    radare2
+    nasm
+    gdb
+)
+
+# --- OSINT & Reconnaissance ---
+PACKAGES_OSINT=(
+    theharvester
+    recon-ng
+    dnsrecon
+    dnsenum
+    dmitry
+    fierce
+)
+
+# --- Windows / SMB / Active Directory ---
+PACKAGES_WINDOWS=(
+    enum4linux
+    smbclient
+    nbtscan
+    ldap-utils
+    samdump2
+    chntpw
 )
 
 # --- WiFi Security — Built from Source (not in Debian repos) ---
@@ -349,6 +470,9 @@ PYTHON_PACKAGES=(
     yara-python
     pwntools
     pylnk3
+    wafw00f
+    sublist3r
+    hashid
 
     # Data & Analysis
     pandas
@@ -368,6 +492,7 @@ PACKAGES_EXTRA=(
     xclip
     xdotool
     flameshot
+    podman
 )
 
 # ============================================================================
@@ -391,6 +516,9 @@ get_all_packages() {
          "${PACKAGES_STEGO[@]}" \
          "${PACKAGES_WIFI_EXTRA[@]}" \
          "${PACKAGES_WIFI_SECURITY[@]}" \
+         "${PACKAGES_PENTEST[@]}" \
+         "${PACKAGES_OSINT[@]}" \
+         "${PACKAGES_WINDOWS[@]}" \
          "${PACKAGES_EXTRA[@]}"
 }
 
@@ -402,6 +530,7 @@ PACKAGES_INSTALLER=(
     live-boot
     live-config
     systemd-sysv
+    gdisk
     parted
     cryptsetup
     dosfstools

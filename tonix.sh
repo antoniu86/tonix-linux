@@ -282,15 +282,9 @@ CHROOT_RMBDEPS
     # --- Phase 3b: Download and install Tor Browser ---
     header "Phase 3b: Installing Tor Browser"
 
-    chroot "$CHROOT_DIR" /bin/bash << 'CHROOT_TORBROWSER'
+    chroot "$CHROOT_DIR" /bin/bash << CHROOT_TORBROWSER
 set -e
 export DEBIAN_FRONTEND=noninteractive
-
-TOR_VERSION="15.0.6"
-TOR_ARCH="linux-x86_64"
-TOR_LANG="en-US"
-TOR_DIR="/opt/tor-browser"
-TOR_URL="https://dist.torproject.org/torbrowser/${TOR_VERSION}/tor-browser-${TOR_ARCH}-${TOR_VERSION}.tar.xz"
 
 echo "Downloading Tor Browser ${TOR_VERSION}..."
 
