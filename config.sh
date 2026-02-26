@@ -100,6 +100,8 @@ PACKAGES_DESKTOP=(
     thunar-archive-plugin
     thunar-volman
     ristretto
+    feh
+    nsxiv
     mousepad
     file-roller
     xfce4-clipman-plugin
@@ -157,6 +159,7 @@ PACKAGES_PRIVACY=(
     aide
     auditd
     pass
+    onionshare
 )
 
 # --- Browsers ---
@@ -186,6 +189,7 @@ PACKAGES_EDITORS=(
     fd-find
     exa
     tldr
+    pandoc
     zsh
     zsh-autosuggestions
     zsh-syntax-highlighting
@@ -237,8 +241,12 @@ PACKAGES_DEV=(
     jq
     yq
     xmlstarlet
+    miller
     sqlite3
     ltrace
+    minicom
+    picocom
+    flashrom
     dkms
     linux-headers-amd64
     linux-compiler-gcc-12-x86
@@ -247,7 +255,10 @@ PACKAGES_DEV=(
 # --- Media (minimal) ---
 PACKAGES_MEDIA=(
     mpv
+    vlc
     ffmpeg
+    cmus
+    audacious
     pipewire
     pipewire-pulse
     wireplumber
@@ -277,6 +288,8 @@ PACKAGES_SYSUTIL=(
     nethogs
     sysstat
     lm-sensors
+    zram-tools
+    earlyoom
 )
 
 # --- Steganography, Forensics & Dependencies ---
@@ -489,10 +502,17 @@ PACKAGES_EXTRA=(
     geany
     qalculate-gtk
     evince
+    zathura
+    mupdf
+    abiword
+    gnumeric
     xclip
     xdotool
     flameshot
     podman
+    borgbackup
+    rclone
+    neomutt
 )
 
 # ============================================================================
