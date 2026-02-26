@@ -190,13 +190,56 @@
         <p>Test your builds instantly using QEMU/KVM without writing to a physical USB drive. Inside the live ISO environment, run <code>install-tonix</code> and enter <code>vda</code> as the target device to simulate an installation.</p>
 
         <h2>Tactical Toolkit</h2>
-        <ul>
-            <li><strong>Steganography:</strong> Custom built-in <code>stego</code> command to hide/extract encrypted data within media files.</li>
-            <li><strong>WiFi Auditing:</strong> Native support for Alfa adapters (AWUS036ACM, AWUS036AXML, AWUS1900) + aircrack-ng, kismet, wireshark, bettercap, and mdk4.</li>
-            <li><strong>Python Security:</strong> Pre-installed toolkit including scapy, impacket, volatility3, and pwntools.</li>
-            <li><strong>Desktop Environment:</strong> Boots to CLI for stealth. Type <code>startxfce4</code> to launch the lightweight XFCE GUI.</li>
-            <li><strong>Boot Modes:</strong> Immutable (Default), Persistent Root (Writable), RAM Only (Max Privacy), and Recovery. Dual boot support for BIOS and UEFI.</li>
-        </ul>
+        <div class="feature-grid">
+            <div class="feature-item">
+                <strong>[+] WiFi Auditing</strong><br>
+                Alfa adapter support (AWUS036ACM, AWUS036AXML, AWUS1900) + aircrack-ng, kismet, wifite, bettercap, mdk4, hcxdumptool, cowpatty, reaver.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Penetration Testing</strong><br>
+                nikto, sqlmap, gobuster, dirb, wfuzz, whatweb, hydra, medusa, mitmproxy, sslsplit, exploitdb (searchsploit).
+            </div>
+            <div class="feature-item">
+                <strong>[+] OSINT &amp; Recon</strong><br>
+                theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry for passive and active intelligence gathering.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Windows / SMB / AD</strong><br>
+                enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw for Windows network enumeration and credential recovery.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Password &amp; Hash Cracking</strong><br>
+                hashcat, john, hydra, medusa, fcrackzip, pdfcrack, ophcrack. Wordlist generation via crunch and cewl.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Encryption Toolkit</strong><br>
+                LUKS2, GPG, age, gocryptfs, encfs, VeraCrypt, git-crypt, ssss (Shamir's Secret Sharing), YubiKey &amp; smart card support.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Tunneling &amp; Pivoting</strong><br>
+                proxychains4, iodine (DNS tunnel), proxytunnel (HTTP/S tunnel), sshuttle, stunnel4, OpenVPN, WireGuard.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Forensics &amp; Reverse Engineering</strong><br>
+                sleuthkit, dc3dd, gddrescue, binwalk, foremost, volatility3, radare2, gdb, nasm, ltrace, strace.
+            </div>
+            <div class="feature-item">
+                <strong>[+] SDR &amp; Radio</strong><br>
+                rtl-sdr for software-defined radio, Ubertooth for Bluetooth LE sniffing alongside Kismet.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Steganography</strong><br>
+                Custom <code>stego</code> command for hiding encrypted data within media files. steghide, outguess, exiftool, binwalk pre-installed.
+            </div>
+            <div class="feature-item">
+                <strong>[+] Python Security Toolkit</strong><br>
+                scapy, impacket, volatility3, pwntools, yara, wafw00f, sublist3r, hashid, paramiko, dpkt pre-installed via pip.
+            </div>
+            <div class="feature-item">
+                <strong>[+] System &amp; Terminal</strong><br>
+                Boots to CLI. <code>startxfce4</code> for GUI. neovim, fzf, ripgrep, bat, exa, tldr, zsh, iotop, iftop, nethogs pre-installed.
+            </div>
+        </div>
 
         <p style="margin-top: 40px; text-align: center;">
             <a href="https://github.com/antoniu86/tonix-linux" target="_blank">[ Access the Source Repository ]</a>
