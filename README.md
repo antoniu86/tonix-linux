@@ -15,7 +15,7 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Dual boot support** — BIOS (legacy) + UEFI (32-bit and 64-bit)
 - **XFCE desktop** — Lightweight GUI with custom Tonix wallpapers (boots to CLI by default)
 - **Alfa WiFi support** — Auto-detects AWUS036ACM, AWUS036AXML, AWUS1900
-- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4, wifite, hcxdumptool, cowpatty, hping3, yersinia
+- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4, wifite, hcxdumptool, cowpatty, hping3, yersinia, ngrep, netsniff-ng
 - **Penetration testing** — nikto, sqlmap, gobuster, dirb, wfuzz, whatweb, sslscan, hydra, medusa, radare2, nasm, gdb
 - **OSINT & reconnaissance** — theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry
 - **Windows/SMB/AD** — enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw
@@ -31,21 +31,25 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Proxy routing** — proxychains4 routes any app through Tor/SOCKS
 - **Tunneling** — iodine (DNS tunnel), proxytunnel (HTTP/S proxy tunnel), obfs4proxy (Tor bridges for censored networks)
 - **Rootkit & integrity** — rkhunter, chkrootkit, lynis, aide, auditd
-- **Enhanced forensics** — sleuthkit, dc3dd, gddrescue, hashdeep for disk imaging, recovery and integrity verification
-- **Hardware hacking** — minicom, picocom for serial; flashrom for firmware; avrdude, openocd for embedded/JTAG
-- **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, pandoc, zsh with autosuggestions
+- **Enhanced forensics** — sleuthkit, dc3dd, gddrescue, hashdeep, bulk-extractor for disk imaging, carving and integrity verification
+- **Hardware hacking** — minicom, picocom for serial; flashrom for firmware; avrdude, openocd for embedded/JTAG; sigrok-cli + pulseview for logic analysis
+- **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, pandoc, lnav, multitail, zsh with autosuggestions
 - **System monitoring** — iotop, iftop, nethogs, sysstat, lm-sensors
 - **RAM-only stability** — zram-tools compresses RAM, earlyoom prevents OOM lockup in RAM-only mode
 - **Anonymous file sharing** — onionshare shares files and hosts sites over Tor
+- **Anonymous networks** — Tor, I2P, obfs4proxy bridges; full multi-network anonymity stack
+- **Antivirus** — clamav for scanning files and downloads
 - **Encrypted backup** — borgbackup (deduplicated), rclone (cloud sync)
 - **Hardware hacking** — minicom, picocom for serial consoles; flashrom for firmware read/write
 - **Data processing** — miller (`mlr`) processes CSV/JSON/TSV alongside jq, yq, xmlstarlet
 - **Media** — mpv, vlc, cmus, audacious for video/audio; feh, nsxiv, ristretto for images
 - **Documents & office** — evince, zathura, mupdf for PDF; abiword, gnumeric for lightweight office
 - **Email** — neomutt terminal email client with GPG integration
+- **IRC** — weechat and irssi terminal IRC clients
+- **Torrents** — rtorrent (CLI), transmission-gtk (GUI); aria2 also supports magnets/torrents
 - **Built-in steganography** — `stego` command for hiding encrypted data in files
 - **Media & documents** — mpv, vlc, cmus, feh; zathura, mupdf, evince; imagemagick for CLI image processing
-- **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r, sslyze, visidata pre-installed
+- **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r, sslyze, visidata, stegcracker, arjun pre-installed
 - **Fast rebuilds** — Package cache makes subsequent builds 3-4x faster (15-25 min)
 - **RAM wiping** — Clears sensitive data from memory on shutdown
 - **No swap** — Prevents sensitive data from leaking to disk

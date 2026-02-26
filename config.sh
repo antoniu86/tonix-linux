@@ -161,6 +161,8 @@ PACKAGES_PRIVACY=(
     pass
     onionshare
     obfs4proxy
+    i2p
+    clamav
 )
 
 # --- Browsers ---
@@ -191,6 +193,8 @@ PACKAGES_EDITORS=(
     exa
     tldr
     pandoc
+    lnav
+    multitail
     zsh
     zsh-autosuggestions
     zsh-syntax-highlighting
@@ -251,6 +255,8 @@ PACKAGES_DEV=(
     flashrom
     avrdude
     openocd
+    sigrok-cli
+    pulseview
     dkms
     linux-headers-amd64
     linux-compiler-gcc-12-x86
@@ -313,6 +319,7 @@ PACKAGES_STEGO=(
     dc3dd
     gddrescue
     hashdeep
+    bulk-extractor
 
     # Python dependencies for your stego-gui app
     python3-tk
@@ -362,6 +369,8 @@ PACKAGES_WIFI_SECURITY=(
     tshark
     tcpdump
     ettercap-text-only
+    ngrep
+    netsniff-ng
 
     # Network monitoring & intrusion detection
     arpwatch
@@ -502,6 +511,8 @@ PYTHON_PACKAGES=(
     hashid
     sslyze
     visidata
+    stegcracker
+    arjun
 
     # Data & Analysis
     pandas
@@ -518,6 +529,10 @@ PACKAGES_EXTRA=(
     geany
     qalculate-gtk
     evince
+    rtorrent
+    transmission-gtk
+    weechat
+    irssi
     zathura
     mupdf
     abiword
