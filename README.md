@@ -15,11 +15,11 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Dual boot support** — BIOS (legacy) + UEFI (32-bit and 64-bit)
 - **XFCE desktop** — Lightweight GUI with custom Tonix wallpapers (boots to CLI by default)
 - **Alfa WiFi support** — Auto-detects AWUS036ACM, AWUS036AXML, AWUS1900
-- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4, wifite, hcxdumptool, cowpatty
-- **Penetration testing** — nikto, sqlmap, gobuster, dirb, wfuzz, whatweb, hydra, medusa, radare2, nasm, gdb
+- **WiFi security tools** — aircrack-ng, kismet, wireshark, bettercap, mdk4, wifite, hcxdumptool, cowpatty, hping3, yersinia
+- **Penetration testing** — nikto, sqlmap, gobuster, dirb, wfuzz, whatweb, sslscan, hydra, medusa, radare2, nasm, gdb
 - **OSINT & reconnaissance** — theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry
 - **Windows/SMB/AD** — enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw
-- **MITM & traffic interception** — mitmproxy, sslsplit, ettercap, dsniff
+- **MITM & traffic interception** — mitmproxy, sslsplit, ettercap, dsniff, p0f, tcpflow
 - **Wordlist generation** — crunch, cewl for custom and pattern-based wordlists
 - **File cracking** — fcrackzip, pdfcrack, ophcrack, exploitdb (searchsploit)
 - **SNMP enumeration** — snmp, onesixtyone
@@ -29,9 +29,10 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **VPN support** — OpenVPN + WireGuard pre-installed
 - **DNS encryption** — dnscrypt-proxy encrypts DNS queries, no leaks
 - **Proxy routing** — proxychains4 routes any app through Tor/SOCKS
-- **Tunneling** — iodine (DNS tunnel), proxytunnel (HTTP/S proxy tunnel)
+- **Tunneling** — iodine (DNS tunnel), proxytunnel (HTTP/S proxy tunnel), obfs4proxy (Tor bridges for censored networks)
 - **Rootkit & integrity** — rkhunter, chkrootkit, lynis, aide, auditd
-- **Enhanced forensics** — sleuthkit, dc3dd, gddrescue for disk imaging and recovery
+- **Enhanced forensics** — sleuthkit, dc3dd, gddrescue, hashdeep for disk imaging, recovery and integrity verification
+- **Hardware hacking** — minicom, picocom for serial; flashrom for firmware; avrdude, openocd for embedded/JTAG
 - **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, pandoc, zsh with autosuggestions
 - **System monitoring** — iotop, iftop, nethogs, sysstat, lm-sensors
 - **RAM-only stability** — zram-tools compresses RAM, earlyoom prevents OOM lockup in RAM-only mode
@@ -43,7 +44,8 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Documents & office** — evince, zathura, mupdf for PDF; abiword, gnumeric for lightweight office
 - **Email** — neomutt terminal email client with GPG integration
 - **Built-in steganography** — `stego` command for hiding encrypted data in files
-- **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r pre-installed
+- **Media & documents** — mpv, vlc, cmus, feh; zathura, mupdf, evince; imagemagick for CLI image processing
+- **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r, sslyze, visidata pre-installed
 - **Fast rebuilds** — Package cache makes subsequent builds 3-4x faster (15-25 min)
 - **RAM wiping** — Clears sensitive data from memory on shutdown
 - **No swap** — Prevents sensitive data from leaking to disk
@@ -219,7 +221,8 @@ Pre-installed toolkit beyond WiFi auditing:
 | Category | Tools |
 |----------|-------|
 | Web scanning | nikto, dirb, gobuster, wfuzz, whatweb |
-| Web exploitation | sqlmap, mitmproxy, sslsplit |
+| Web exploitation | sqlmap, mitmproxy, sslsplit, sslscan |
+| HTTP client | httpie |
 | Login brute-forcing | hydra, medusa |
 | File cracking | fcrackzip, pdfcrack, ophcrack |
 | Wordlist generation | crunch, cewl |
@@ -227,11 +230,15 @@ Pre-installed toolkit beyond WiFi auditing:
 | SNMP enumeration | snmp, onesixtyone |
 | OSINT & recon | theharvester, recon-ng, dnsrecon, dnsenum, fierce, dmitry |
 | Windows / SMB / AD | enum4linux, smbclient, nbtscan, ldap-utils, samdump2, chntpw |
+| Packet crafting | hping3 |
+| Layer 2 attacks | yersinia, dsniff, ettercap |
+| Passive analysis | p0f, tcpflow |
 | Reverse engineering | radare2, nasm, gdb |
-| Proxy & tunneling | proxychains4, iodine, proxytunnel, sshpass |
+| Proxy & tunneling | proxychains4, iodine, proxytunnel, obfs4proxy |
 | Network testing | iperf3, sshuttle, mtr |
-| Packet analysis | wireshark, tshark, tcpdump, ettercap |
+| Packet capture | wireshark, tshark, tcpdump |
 | Exploit database | exploitdb (searchsploit) |
+| Hardware / embedded | avrdude, openocd, flashrom |
 | SDR / radio | rtl-sdr, ubertooth |
 
 ## Tails-Inspired Security

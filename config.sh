@@ -160,6 +160,7 @@ PACKAGES_PRIVACY=(
     auditd
     pass
     onionshare
+    obfs4proxy
 )
 
 # --- Browsers ---
@@ -228,6 +229,7 @@ PACKAGES_NETTOOLS=(
     iodine
     proxytunnel
     sshpass
+    httpie
 )
 
 # --- Development (lightweight) ---
@@ -247,6 +249,8 @@ PACKAGES_DEV=(
     minicom
     picocom
     flashrom
+    avrdude
+    openocd
     dkms
     linux-headers-amd64
     linux-compiler-gcc-12-x86
@@ -308,6 +312,7 @@ PACKAGES_STEGO=(
     sleuthkit
     dc3dd
     gddrescue
+    hashdeep
 
     # Python dependencies for your stego-gui app
     python3-tk
@@ -378,6 +383,12 @@ PACKAGES_WIFI_SECURITY=(
 
     # ARP/MITM testing
     dsniff
+    hping3
+    yersinia
+
+    # Passive analysis & session reconstruction
+    p0f
+    tcpflow
 
     # Runtime libraries for tools built from source (mdk4)
     # The -dev packages are build-time only and get removed after build;
@@ -413,6 +424,9 @@ PACKAGES_PENTEST=(
     # SNMP enumeration
     snmp
     onesixtyone
+
+    # SSL/TLS auditing
+    sslscan
 
     # Exploit database
     exploitdb
@@ -486,6 +500,8 @@ PYTHON_PACKAGES=(
     wafw00f
     sublist3r
     hashid
+    sslyze
+    visidata
 
     # Data & Analysis
     pandas
@@ -506,6 +522,7 @@ PACKAGES_EXTRA=(
     mupdf
     abiword
     gnumeric
+    imagemagick
     xclip
     xdotool
     flameshot
