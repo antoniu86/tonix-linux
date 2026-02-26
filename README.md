@@ -32,8 +32,16 @@ A custom Debian-based Linux distribution designed to run entirely from a USB dri
 - **Tunneling** — iodine (DNS tunnel), proxytunnel (HTTP/S proxy tunnel)
 - **Rootkit & integrity** — rkhunter, chkrootkit, lynis, aide, auditd
 - **Enhanced forensics** — sleuthkit, dc3dd, gddrescue for disk imaging and recovery
-- **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, zsh with autosuggestions
+- **Modern terminal** — neovim, fzf, ripgrep, bat, fd-find, exa, tldr, pandoc, zsh with autosuggestions
 - **System monitoring** — iotop, iftop, nethogs, sysstat, lm-sensors
+- **RAM-only stability** — zram-tools compresses RAM, earlyoom prevents OOM lockup in RAM-only mode
+- **Anonymous file sharing** — onionshare shares files and hosts sites over Tor
+- **Encrypted backup** — borgbackup (deduplicated), rclone (cloud sync)
+- **Hardware hacking** — minicom, picocom for serial consoles; flashrom for firmware read/write
+- **Data processing** — miller (`mlr`) processes CSV/JSON/TSV alongside jq, yq, xmlstarlet
+- **Media** — mpv, vlc, cmus, audacious for video/audio; feh, nsxiv, ristretto for images
+- **Documents & office** — evince, zathura, mupdf for PDF; abiword, gnumeric for lightweight office
+- **Email** — neomutt terminal email client with GPG integration
 - **Built-in steganography** — `stego` command for hiding encrypted data in files
 - **Python security toolkit** — scapy, impacket, volatility3, pwntools, wafw00f, sublist3r pre-installed
 - **Fast rebuilds** — Package cache makes subsequent builds 3-4x faster (15-25 min)
